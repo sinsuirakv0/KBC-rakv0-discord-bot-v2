@@ -36,6 +36,7 @@
 - Motion完了時にasset、prepare、encode、total、出力bytesを重複しない区間でlogへ残すようにした。
 - Release Local Discordで710-fのmove・idle・attack・knockback計345 frameをMP4送信し、asset 110ms、prepare 165ms、encode 1,859ms、total 2,135ms、出力1,401,702 bytesを確認した。
 - 本番DockerfileからLinux imageを構築し、Protocol v3 Native moduleと同梱FFmpeg 7.0.2の実行を確認した。Core直結Smokeでは710-fの同じ345 frameを4,009msで生成し、MP4全Frame decode、1,401,701 bytesのFile Action、Action結果後のworkspace cleanupまで確認した。
+- commit `2a8ff5d`をNorthflankへ段階投入し、Deployment status `success`、`/health/live` HTTP 200 (`alive`)、`/health` HTTP 200 (`ready`)を確認した。
 
 ## 実装段階
 
@@ -97,17 +98,16 @@
 - [x] Local DiscordでのMotion実送信確認
 - [x] Docker buildとFFmpeg配置確認
 - [x] 数MiB出力がJSON number arrayを経由しないAction経路
-- [ ] 本環境へ段階投入
+- [x] 本環境へ段階投入
 - [ ] 本環境の時間、RSS、Queue wait確認
 
 ## 再開位置
 
 次回はこの順序で再開する。
 
-1. 現在の変更をGitHubへ反映し、Northflankへ段階投入する。
-2. Northflankのbuild・deploy、`/health/live`、`/health`を確認する。
-3. 本環境Discordで代表Motionを1回生成し、生成時間、RSS、queue waitを記録する。
-4. 本環境で問題がなければ旧Motion経路からの移行を完了する。
+1. 本環境Discordで代表Motionを1回生成し、生成時間、RSS、queue waitを記録する。
+2. 本番ログとDiscord出力が正常なら、旧Motion経路からの移行を完了とする。
+3. 実測でボトルネックが見つかった場合だけ、次の計測対象を決める。
 
 再開時に最初に読むファイルは、`docs/decisions/MOTION_RENDERING_V2.md`、`docs/decisions/TASK_RUNTIME_V1.md`、このチェックポイント、`crates/kbc-core/src/task_runtime.rs`の順とする。
 
