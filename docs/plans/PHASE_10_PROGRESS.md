@@ -1,6 +1,6 @@
 ﻿# Phase 10以降 作業チェックポイント
 
-- 状態: 非Motion Command移植完了、V2本環境稼働開始
+- 状態: 非Motion Command移植完了、V2本環境稼働開始、Motion再設計実装中
 - 最終更新: 2026-09-22
 - 対象: 非Motion Command、Storage、Notification Runtime
 
@@ -8,7 +8,7 @@
 
 1. Motion以外のCommandをすべてV2へ移植する。
 2. V2を本環境で動かし、通常Commandと通知を観測する。
-3. 本環境の計測結果を使ってMotionを移植・改善・高速化する。
+3. 本環境の計測結果を使ってMotionを再設計し、Task Runtimeと新しい描画・encode経路を実装する。
 
 `utbench`は旧版で必要な計測結果を取得済みのため、V2へ移植しない。Motion本体とTask Runtimeも本環境稼働後まで保留する。
 
@@ -51,12 +51,14 @@
 
 1. 実際の更新検知Eventで、初回投稿、種類追記、SKD詳細、KBCリンク、永続Checkpointを確認する。
 2. 本環境の通常Commandを利用者側から確認する。
-3. 本環境の計測結果を取りながらMotion設計・移植・改善・高速化へ進む。
+3. `docs/decisions/MOTION_RENDERING_V2.md`に従い、Task RuntimeとMotion再設計を実装する。
+
+public Snapshotへの4件の外部GPT Reviewは`docs/plans/EXTERNAL_REVIEW_SYNTHESIS_2026-09-22.md`へ統合した。Motionの大容量添付は既存のinline binary Actionを使わず、Task所有の一時File経路として設計する。Bot管理者仕様の変更提案は採用しない。
 
 実在しない有効EventによるE2E試験は、永続通知履歴とDiscord Channelを汚すため実施していない。最初の実更新をE2E確認に使う。
 
 ## 再開位置
 
-Northflankの既存ServiceはV2 Repositoryへ切り替え済みで、CI/CDも再有効化した。次回は本環境の通常Commandと最初の実更新通知を観測しつつ、Motion設計へ進む。
+Northflankの既存ServiceはV2 Repositoryへ切り替え済みで、CI/CDも再有効化した。Motionは旧実装を移植せず、Rust中心の新pipelineとして実装を開始した。Task Runtime、Motion Domain、Rasterizer、MP4/GIF経路、`ut`/`tut`統合までproduction codeを追加済みで、次回は`docs/plans/MOTION_REDESIGN_PROGRESS.md`の再開手順（最小テスト、Release benchmark、Local Discord確認）から開始する。
 
 `D:\KBC\KBC-rakv0-discord-bot`は読み取りだけに使用し、変更していない。

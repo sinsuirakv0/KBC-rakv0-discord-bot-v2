@@ -1,6 +1,6 @@
-﻿//! 組み込みCommandを登録する。
+//! 組み込みCommandを登録する。
 
-mod common;
+pub(crate) mod common;
 mod eventdata;
 mod gatya;
 mod help;
@@ -13,12 +13,14 @@ mod static_response;
 mod tut;
 mod ut;
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::command::Command;
 use crate::content::ContentCatalog;
 use crate::services::{Clock, HttpService};
 use crate::storage::StorageService;
+use crate::task_runtime::TaskRuntime;
 use eventdata::EventDataCommand;
 use gatya::{GatyaCommand, RegisteredGatyaDataSource};
 use help::HelpCommand;
@@ -36,6 +38,8 @@ pub(crate) fn built_in_commands(
     http: Arc<HttpService>,
     clock: Arc<dyn Clock>,
     storage: Arc<StorageService>,
+    tasks: Arc<TaskRuntime>,
+    ffmpeg_path: Option<PathBuf>,
 ) -> Result<Vec<Box<dyn Command>>, MissingCommandContent> {
     let mut commands: Vec<Box<dyn Command>> = content
         .responses()
@@ -79,11 +83,21 @@ pub(crate) fn built_in_commands(
     let tut_help = content
         .help("tut")
         .ok_or(MissingCommandContent::CommandHelp("tut"))?;
-    commands.push(Box::new(TutCommand::new(tut_help, Arc::clone(&http))));
+    commands.push(Box::new(TutCommand::new(
+        tut_help,
+        Arc::clone(&http),
+        Arc::clone(&tasks),
+        ffmpeg_path.clone(),
+    )));
     let ut_help = content
         .help("ut")
         .ok_or(MissingCommandContent::CommandHelp("ut"))?;
-    commands.push(Box::new(UtCommand::new(ut_help, Arc::clone(&http))));
+    commands.push(Box::new(UtCommand::new(
+        ut_help,
+        Arc::clone(&http),
+        tasks,
+        ffmpeg_path,
+    )));
     let gatya_help = content
         .help("gatya")
         .ok_or(MissingCommandContent::CommandHelp("gatya"))?;

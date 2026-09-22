@@ -72,6 +72,6 @@ Localと旧本環境が同じ設定Fileへ同時に書き込み、GitHubのSHA�
 
 ## 本環境
 
-2026-09-22にNorthflankの既存Serviceのbuild sourceをprivate Repository `sinsuirakv0/KBC-rakv0-discord-bot-v2`へ変更した。自動deployを一時停止してDocker build成功を確認した後、commit `976c7c3`を手動deployし、旧Container終了後にV2が起動した。公開URLとPort 3000、既存のDiscord・GitHub Storage・Event Update環境変数は維持した。
+2026-09-22にNorthflankの既存Serviceのbuild sourceをpublic code Repository `sinsuirakv0/KBC-rakv0-discord-bot-v2`へ変更した。通知設定と配送履歴を保存するprivate Data Repositoryとは別である。自動deployを一時停止してDocker build成功を確認した後、commit `976c7c3`を手動deployし、旧Container終了後にV2が起動した。公開URLとPort 3000、既存のDiscord・GitHub Storage・Event Update環境変数は維持した。
 
 起動後はDiscord login、`/health/live`の200 alive、`/health`の200 ready、Northflank上の1/1 Runningを確認した。CI/CDはV2 Repositoryを対象として再有効化した。

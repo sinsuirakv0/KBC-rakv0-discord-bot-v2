@@ -7,6 +7,7 @@ export interface RuntimeConfig {
   eventQueueCapacity?: number;
   actionQueueCapacity?: number;
   contentDirectory?: string;
+  ffmpegPath?: string;
   httpMaxConcurrency?: number;
   httpRequestTimeoutMs?: number;
   httpMaxResponseBytes?: number;

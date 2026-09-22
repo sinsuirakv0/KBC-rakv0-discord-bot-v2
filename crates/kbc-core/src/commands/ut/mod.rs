@@ -1,7 +1,9 @@
-﻿//! 味方キャラ検索・画像・関連Fileを扱う`ut` Command。
+//! 味方キャラ検索・画像・関連Fileを扱う`ut` Command。
 
 mod data_source;
 
+use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -12,10 +14,13 @@ use crate::commands::common::file_picker::{
     AssetFileOption, NEXT_PAGE_EMOJI, NUMBER_EMOJIS, PREVIOUS_PAGE_EMOJI, file_picker,
 };
 use crate::commands::common::search::normalize_search_text;
+use crate::motion::request::{MotionRequest, parse_motion_arguments};
+use crate::motion::{MotionJob, MotionPlan};
 use crate::services::HttpService;
 use crate::session::{
     SessionContext, SessionContinuation, SessionFuture, SessionRequest, SessionResume,
 };
+use crate::task_runtime::{TaskRuntime, TaskSubmission, TaskSubmitError};
 
 use data_source::UtDataSource;
 
@@ -32,6 +37,9 @@ const INVALID_MOTION_MESSAGE: &str =
     "motionの指定が正しくありません。o.ut help で使い方を確認してください。";
 const MISSING_IMAGE_MESSAGE: &str = "指定した画像はこのキャラには存在しません。";
 const MISSING_FILE_MESSAGE: &str = "このキャラに関連するファイルが見つかりませんでした。";
+const MISSING_MOTION_MESSAGE: &str = "このキャラのモーション素材が見つかりませんでした。";
+const MOTION_BUSY_MESSAGE: &str =
+    "現在ほかのモーションを処理中です。完了してからもう一度お試しください。";
 const DATA_ERROR_MESSAGE: &str =
     "味方キャラデータの取得に失敗しました。しばらくしてからもう一度お試しください。";
 const LIST_FOOTER: &str = "詳細は o.ut <ID> で表示できます。";
@@ -140,11 +148,12 @@ struct FileRequest {
     form: Option<UtForm>,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 enum UtOperation {
     Detail,
     Origin(OriginRequest),
     File(FileRequest),
+    Motion(MotionRequest),
 }
 
 enum UtRequest {
@@ -169,10 +178,17 @@ pub(super) struct UtCommand {
     metadata: CommandMetadata,
     help: String,
     data_source: UtDataSource,
+    tasks: Arc<TaskRuntime>,
+    ffmpeg_path: Option<PathBuf>,
 }
 
 impl UtCommand {
-    pub(super) fn new(help: &str, http: Arc<HttpService>) -> Self {
+    pub(super) fn new(
+        help: &str,
+        http: Arc<HttpService>,
+        tasks: Arc<TaskRuntime>,
+        ffmpeg_path: Option<PathBuf>,
+    ) -> Self {
         Self {
             metadata: CommandMetadata {
                 name: "ut".to_owned(),
@@ -181,6 +197,8 @@ impl UtCommand {
             },
             help: help.to_owned(),
             data_source: UtDataSource::new(http),
+            tasks,
+            ffmpeg_path,
         }
     }
 
@@ -220,10 +238,10 @@ impl UtCommand {
             return Ok(message(channel_id, NOT_FOUND_MESSAGE));
         }
 
-        if matches.len() == 1 && !matches!(operation, UtOperation::Detail) {
+        if matches.len() == 1 && !matches!(&operation, UtOperation::Detail) {
             return self.run_selected(context, &matches[0], operation).await;
         }
-        if matches.len() <= 3 && matches!(operation, UtOperation::Detail) {
+        if matches.len() <= 3 && matches!(&operation, UtOperation::Detail) {
             let mut output = CommandOutput::new();
             for matched in matches {
                 output.push(CoreActionData::SendMessage {
@@ -234,8 +252,14 @@ impl UtCommand {
             return Ok(output);
         }
         if matches.len() <= NUMBER_EMOJIS.len() {
-            let continuation =
-                UtSelection::new(query.clone(), matches, operation, self.data_source.clone());
+            let continuation = UtSelection::new(
+                query.clone(),
+                matches,
+                operation,
+                self.data_source.clone(),
+                Arc::clone(&self.tasks),
+                self.ffmpeg_path.clone(),
+            );
             let content = continuation.format("数字のリアクションで選択してください。");
             let session = SessionRequest::new(
                 context.user_id().to_owned(),
@@ -268,6 +292,18 @@ impl UtCommand {
             )),
             UtOperation::File(request) => {
                 file_output(context, matched, request, &self.data_source).await
+            }
+            UtOperation::Motion(request) => {
+                motion_output(
+                    context.channel_id(),
+                    context.request_id(),
+                    matched,
+                    request,
+                    &self.data_source,
+                    &self.tasks,
+                    self.ffmpeg_path.as_deref(),
+                )
+                .await
             }
         }
     }
@@ -342,7 +378,16 @@ fn parse_request(arguments: &[String]) -> UtRequest {
         };
     }
     if Some(operation_index) == motion_index {
-        return UtRequest::InvalidMotion;
+        let Some(request) =
+            parse_motion_arguments(&arguments[operation_index + 1..], &["f", "c", "s", "u"])
+        else {
+            return UtRequest::InvalidMotion;
+        };
+        return UtRequest::Search {
+            query,
+            force,
+            operation: UtOperation::Motion(request),
+        };
     }
     if Some(operation_index) == file_index {
         let file_arguments = &arguments[operation_index + 1..];
@@ -841,6 +886,8 @@ struct UtSelection {
     operation: UtOperation,
     reactions: Vec<String>,
     data_source: UtDataSource,
+    tasks: Arc<TaskRuntime>,
+    ffmpeg_path: Option<PathBuf>,
 }
 
 impl UtSelection {
@@ -849,6 +896,8 @@ impl UtSelection {
         matches: Vec<UtSearchMatch>,
         operation: UtOperation,
         data_source: UtDataSource,
+        tasks: Arc<TaskRuntime>,
+        ffmpeg_path: Option<PathBuf>,
     ) -> Self {
         let reactions = NUMBER_EMOJIS[..matches.len()]
             .iter()
@@ -860,6 +909,8 @@ impl UtSelection {
             operation,
             reactions,
             data_source,
+            tasks,
+            ffmpeg_path,
         }
     }
 
@@ -884,7 +935,7 @@ impl SessionContinuation for UtSelection {
                 message_id: context.message_id().to_owned(),
                 content: self.format(&format!("選択済み: {}", format_label(matched))),
             }];
-            match self.operation {
+            match self.operation.clone() {
                 UtOperation::Detail => {
                     actions.push(send_message_action(
                         context.channel_id(),
@@ -921,6 +972,20 @@ impl SessionContinuation for UtSelection {
                             Ok(SessionResume::complete(actions))
                         }
                     }
+                }
+                UtOperation::Motion(request) => {
+                    let output = motion_output(
+                        context.channel_id(),
+                        context.request_id(),
+                        matched,
+                        request,
+                        &self.data_source,
+                        &self.tasks,
+                        self.ffmpeg_path.as_deref(),
+                    )
+                    .await?;
+                    actions.extend(output.into_actions());
+                    Ok(SessionResume::complete(actions))
                 }
             }
         })
@@ -1000,6 +1065,107 @@ fn send_message_action(channel_id: &str, content: impl Into<String>) -> CoreActi
 
 fn message(channel_id: &str, content: impl Into<String>) -> CommandOutput {
     CommandOutput::single(send_message_action(channel_id, content))
+}
+
+fn resolve_motion_plan(
+    unit_buy: &UnitBuy,
+    matched: &UtSearchMatch,
+    request: MotionRequest,
+) -> Option<MotionPlan> {
+    let form = request
+        .form
+        .as_deref()
+        .and_then(UtForm::parse)
+        .unwrap_or(UtForm::First);
+    if !UtForm::ALL
+        .into_iter()
+        .take(matched.unit.forms.len())
+        .any(|candidate| candidate == form)
+    {
+        return None;
+    }
+    let stem = resolve_asset_stem(unit_buy, &matched.unit.id, form)?;
+    let mut animation_paths = HashMap::new();
+    for segment in &request.segments {
+        animation_paths.entry(segment.motion).or_insert_with(|| {
+            format!(
+                "ImageData/{}_{}0{}.maanim",
+                stem.asset_id,
+                stem.suffix,
+                segment.motion.asset_index()
+            )
+        });
+    }
+    let base = format!("{}_{}", stem.asset_id, stem.suffix);
+    Some(MotionPlan {
+        format: request.format,
+        full: request.full,
+        filename_stem: format!("ut-{}-{}-motion", matched.unit.id, form.suffix()),
+        preview_scale: match (matched.unit.id.as_str(), form) {
+            ("000", UtForm::First) => 2.25,
+            ("009", UtForm::First) => 0.82,
+            _ => 1.0,
+        },
+        segments: request.segments,
+        sprite_path: format!("Number/{base}.png"),
+        imgcut_path: format!("ImageData/{base}.imgcut"),
+        model_path: format!("ImageData/{base}.mamodel"),
+        animation_paths,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn motion_output(
+    channel_id: &str,
+    request_id: &kbc_protocol::RequestId,
+    matched: &UtSearchMatch,
+    request: MotionRequest,
+    data_source: &UtDataSource,
+    tasks: &TaskRuntime,
+    ffmpeg_path: Option<&std::path::Path>,
+) -> Result<CommandOutput, crate::command::CommandExecutionError> {
+    let unit_buy = match data_source.fetch_unit_buy().await {
+        Ok(unit_buy) => unit_buy,
+        Err(error) => {
+            eprintln!("UnitBuy retrieval for motion failed: {error}");
+            return Ok(message(channel_id, DATA_ERROR_MESSAGE));
+        }
+    };
+    let Some(plan) = resolve_motion_plan(&unit_buy, matched, request) else {
+        return Ok(message(channel_id, MISSING_MOTION_MESSAGE));
+    };
+    let mut paths = vec![
+        plan.sprite_path.clone(),
+        plan.imgcut_path.clone(),
+        plan.model_path.clone(),
+    ];
+    paths.extend(plan.animation_paths.values().cloned());
+    let assets = data_source.assets();
+    let existing = match assets.find_existing(&paths).await {
+        Ok(existing) => existing,
+        Err(error) => {
+            eprintln!("Character motion asset check failed: {error}");
+            return Ok(message(channel_id, DATA_ERROR_MESSAGE));
+        }
+    };
+    if paths.iter().any(|path| !existing.contains(path)) {
+        return Ok(message(channel_id, MISSING_MOTION_MESSAGE));
+    }
+    let job = MotionJob::new(plan, assets, ffmpeg_path.map(PathBuf::from));
+    match tasks.submit(TaskSubmission::new(
+        request_id.clone(),
+        channel_id.to_owned(),
+        format!(
+            "⏳ {} {} のモーション生成を受け付けました",
+            matched.unit.id, matched.unit.forms[0].name
+        ),
+        Box::new(job),
+    )) {
+        Ok(_) => Ok(CommandOutput::new()),
+        Err(TaskSubmitError::Busy | TaskSubmitError::Unavailable) => {
+            Ok(message(channel_id, MOTION_BUSY_MESSAGE))
+        }
+    }
 }
 
 #[cfg(test)]

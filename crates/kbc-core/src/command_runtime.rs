@@ -1,5 +1,6 @@
-﻿//! CoreEventをCommandへdispatchし、CoreActionへ変換する。
+//! CoreEventをCommandへdispatchし、CoreActionへ変換する。
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use kbc_protocol::{
@@ -13,6 +14,7 @@ use crate::content::ContentCatalog;
 use crate::services::{Clock, HttpService};
 use crate::session::SessionRegistration;
 use crate::storage::StorageService;
+use crate::task_runtime::TaskRuntime;
 
 const COMMAND_PREFIX: &str = "o.";
 
@@ -26,9 +28,18 @@ impl CommandRuntime {
         http: Arc<HttpService>,
         clock: Arc<dyn Clock>,
         storage: Arc<StorageService>,
+        tasks: Arc<TaskRuntime>,
+        ffmpeg_path: Option<PathBuf>,
     ) -> Result<Self, CommandRuntimeInitializationError> {
         Ok(Self {
-            registry: CommandRegistry::new(built_in_commands(content, http, clock, storage)?)?,
+            registry: CommandRegistry::new(built_in_commands(
+                content,
+                http,
+                clock,
+                storage,
+                tasks,
+                ffmpeg_path,
+            )?)?,
         })
     }
 
@@ -55,7 +66,8 @@ impl CommandRuntime {
             return None;
         }
 
-        let context = CommandContext::new(guild_id, channel_id.clone(), user_id);
+        let context =
+            CommandContext::new(guild_id, channel_id.clone(), user_id, request_id.clone());
         let output = match command.execute(context, input.arguments).await {
             Ok(output) => output,
             Err(error) => {

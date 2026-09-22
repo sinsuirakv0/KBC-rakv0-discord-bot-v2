@@ -11,6 +11,7 @@ pub struct NativeRuntimeConfig {
     pub event_queue_capacity: Option<u32>,
     pub action_queue_capacity: Option<u32>,
     pub content_directory: Option<String>,
+    pub ffmpeg_path: Option<String>,
     pub http_max_concurrency: Option<u32>,
     pub http_request_timeout_ms: Option<u32>,
     pub http_max_response_bytes: Option<u32>,
@@ -82,6 +83,9 @@ pub async fn create_core(config: Option<NativeRuntimeConfig>) -> Result<NativeCo
         }
         if let Some(directory) = config.content_directory {
             runtime_config.content_directory = directory.into();
+        }
+        if let Some(path) = config.ffmpeg_path {
+            runtime_config.ffmpeg_path = Some(path.into());
         }
         if let Some(max_concurrency) = config.http_max_concurrency {
             runtime_config.http_max_concurrency = max_concurrency as usize;

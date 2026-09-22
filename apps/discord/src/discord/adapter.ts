@@ -55,16 +55,17 @@ export class DiscordAdapter {
     config: DiscordAdapterConfig,
     callbacks: DiscordAdapterCallbacks,
   ): Promise<DiscordAdapter> {
-    const core = await createCore(
-      config.githubData
+    const core = await createCore({
+      ffmpegPath: config.ffmpegPath,
+      ...(config.githubData
         ? {
             githubDataOwner: config.githubData.owner,
             githubDataRepository: config.githubData.repository,
             githubDataBranch: config.githubData.branch,
             githubDataToken: config.githubData.token,
           }
-        : {},
-    );
+        : {}),
+    });
     const client = new Client({
       intents: [
         GatewayIntentBits.Guilds,

@@ -282,7 +282,7 @@ Priority Schedulerや高度なMemory Budgetは必要性が判明するまで導�
 
 特定Command専用Runtimeにはしない。
 
-`utbench`は旧版で計測済みのためV2へ移植しない。MotionとTask RuntimeはV2の本環境稼働後に着手する。
+`utbench`は旧版で計測済みのためV2へ移植しない。V2本環境稼働後のMotionは旧Worker・Canvas経路を移植せず、`docs/decisions/MOTION_RENDERING_V2.md`に従ってRust中心のpipelineとして再設計する。
 
 確認対象:
 
@@ -313,6 +313,8 @@ peak memory
 ```
 
 測定結果に基づいて最適化する。
+
+2026-09-22のpublic Snapshotに対する4件の外部GPT Reviewを、`docs/plans/EXTERNAL_REVIEW_SYNTHESIS_2026-09-22.md`で統合した。Motion開始前または同時に、大容量binary境界、Task Runtime、Task計測、Protocol生成物同期を扱う。通常Command・Discord Actionの有限並行化、Event Dispatcherのoverload Policy、Storage lock分離は、実測後に別Decisionで判断する。Bot管理者仕様の変更提案は運用上の意図と利用者指示により採用しない。
 
 ---
 

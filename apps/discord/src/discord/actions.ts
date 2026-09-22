@@ -77,6 +77,15 @@ export async function executeCoreAction(
       });
       return message.id;
     }
+    case "sendAttachmentFile": {
+      const channel = await getSendableChannel(client, action.channelId);
+      const message = await channel.send({
+        content: createAttachmentMessage(outgoingMessagePrefix, action.message),
+        allowedMentions: { parse: [] },
+        files: [{ attachment: action.path, name: action.fileName }],
+      });
+      return message.id;
+    }
     case "addReaction": {
       const message = await getMessage(client, action.channelId, action.messageId);
       await message.react(action.emoji);

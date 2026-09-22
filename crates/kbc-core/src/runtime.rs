@@ -17,6 +17,7 @@ use crate::notification::{NotificationError, NotificationService};
 use crate::services::{HttpService, HttpServiceConfig, SystemClock};
 use crate::session::{DEFAULT_MAX_SESSIONS, SessionManager, SessionRegistration};
 use crate::storage::{StorageConfig, StorageService};
+use crate::task_runtime::TaskRuntime;
 
 pub const DEFAULT_EVENT_QUEUE_CAPACITY: usize = 64;
 pub const DEFAULT_ACTION_QUEUE_CAPACITY: usize = 16;
@@ -33,6 +34,7 @@ pub struct RuntimeConfig {
     pub event_queue_capacity: usize,
     pub action_queue_capacity: usize,
     pub content_directory: PathBuf,
+    pub ffmpeg_path: Option<PathBuf>,
     pub http_max_concurrency: usize,
     pub http_request_timeout: Duration,
     pub http_max_response_bytes: usize,
@@ -45,6 +47,7 @@ impl Default for RuntimeConfig {
             event_queue_capacity: DEFAULT_EVENT_QUEUE_CAPACITY,
             action_queue_capacity: DEFAULT_ACTION_QUEUE_CAPACITY,
             content_directory: PathBuf::from("content"),
+            ffmpeg_path: None,
             http_max_concurrency: DEFAULT_HTTP_MAX_CONCURRENCY,
             http_request_timeout: DEFAULT_HTTP_REQUEST_TIMEOUT,
             http_max_response_bytes: DEFAULT_HTTP_MAX_RESPONSE_BYTES,
@@ -58,6 +61,7 @@ pub struct AppRuntime {
     action_bus: ActionBus,
     shutdown_sender: watch::Sender<bool>,
     notifications: Arc<NotificationService>,
+    tasks: Arc<TaskRuntime>,
     worker: Mutex<Option<JoinHandle<()>>>,
     is_shutdown: AtomicBool,
 }
@@ -93,13 +97,22 @@ impl AppRuntime {
         );
         let storage = Arc::new(StorageService::new(config.storage, Arc::clone(&http)));
         let clock = Arc::new(SystemClock);
-        let command_runtime =
-            CommandRuntime::new(&content, Arc::clone(&http), clock, Arc::clone(&storage))
-                .map_err(|error| RuntimeError::CommandRegistration(error.to_string()))?;
-
         let (event_sender, event_receiver) = mpsc::channel(config.event_queue_capacity);
         let (action_bus, action_sender) = ActionBus::new(config.action_queue_capacity);
         let (shutdown_sender, shutdown_receiver) = watch::channel(false);
+        let tasks = Arc::new(TaskRuntime::start(
+            action_sender.clone(),
+            shutdown_receiver.clone(),
+        ));
+        let command_runtime = CommandRuntime::new(
+            &content,
+            Arc::clone(&http),
+            clock,
+            Arc::clone(&storage),
+            Arc::clone(&tasks),
+            config.ffmpeg_path,
+        )
+        .map_err(|error| RuntimeError::CommandRegistration(error.to_string()))?;
         let notifications = Arc::new(NotificationService::new(
             storage,
             http,
@@ -118,6 +131,7 @@ impl AppRuntime {
             action_bus,
             shutdown_sender,
             notifications,
+            tasks,
             worker: Mutex::new(Some(worker)),
             is_shutdown: AtomicBool::new(false),
         })
@@ -128,6 +142,12 @@ impl AppRuntime {
 
         if self.is_shutdown.load(Ordering::Acquire) {
             return Err(RuntimeError::ShuttingDown);
+        }
+
+        if let CoreEventData::ActionResult { action_id, outcome } = &event.event
+            && self.tasks.handle_action_result(action_id, outcome).await
+        {
+            return Ok(());
         }
 
         if let CoreEventData::ActionResult { action_id, outcome } = &event.event
@@ -188,6 +208,7 @@ impl AppRuntime {
                 .await
                 .map_err(|error| RuntimeError::WorkerJoin(error.to_string()))?;
         }
+        self.tasks.shutdown().await?;
 
         Ok(())
     }
@@ -217,6 +238,7 @@ pub enum RuntimeError {
     EventQueueClosed,
     ActionQueueClosed,
     WorkerJoin(String),
+    TaskWorkerJoin(String),
 }
 
 impl Display for RuntimeError {
@@ -248,6 +270,7 @@ impl Display for RuntimeError {
             Self::EventQueueClosed => formatter.write_str("event queue is closed"),
             Self::ActionQueueClosed => formatter.write_str("action queue is closed"),
             Self::WorkerJoin(reason) => write!(formatter, "runtime worker failed: {reason}"),
+            Self::TaskWorkerJoin(reason) => write!(formatter, "task worker failed: {reason}"),
         }
     }
 }

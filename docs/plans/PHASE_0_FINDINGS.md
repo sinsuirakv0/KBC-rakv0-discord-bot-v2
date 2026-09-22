@@ -111,7 +111,7 @@ Command同士を依存させず、共有Domainへ依存させる。
 
 現行Native Rustは比較Commandだけで使われ、本番WorkerはJavaScript engineを使う。V2で旧N-API APIをそのまま温存すると、KBC Protocol Bridgeとmotion専用Bridgeが並存する。
 
-V2では現行Rust motion codeを`kbc-core`内部moduleへ移し、Command専用N-API公開は行わない方針を推奨する。移植前にcompatibility smokeでJavaScript版との差を確認する。
+Phase 0時点では現行Rust motion codeを`kbc-core`内部moduleへ移す案を推奨した。その後のBenchmarkでMotion評価以外が支配的と判明したため、この案は`docs/decisions/MOTION_RENDERING_V2.md`の再設計判断に置き換えた。Command専用N-APIを追加しない方針は維持する。
 
 ### P1: LifecycleとReadinessが分散
 
@@ -370,13 +370,13 @@ Storageは早期に一般化せず、Notificationの直前に現行契約を理�
 - 欠点: Service追加時にconstructor更新が必要
 - 影響範囲: AppRuntime、CommandContext、各Service
 
-### 9.4 Native motionをCore内部へ統合する
+### 9.4 Native motionをCore内部へ統合する（Phase 0案・再設計で置換済み）
 
 - 現在案: 現行motion専用N-APIと新KBC Protocolが並存し得る
 - 問題: EngineとBridgeが二重化する
-- 代替案: 現行Rust計算部をCore moduleへ移し、ProtocolからTaskとして呼ぶ
+- 代替案: Phase 0時点では現行Rust計算部をCore moduleへ移す案だったが、現在は旧コードを参照だけに使い、Rust中心の描画・encode pipelineを再設計する
 - 利点: 本番経路が1つになり、Command専用N-APIを増やさない
-- 欠点: JavaScript版とのcompatibility確認が必要
+- 欠点: 新Rasterizerとencode経路の互換性・性能確認が必要
 - 影響範囲: motion、TaskRuntime、Docker、compatibility smoke
 
 ## 10. Phase 0の確定事項と後続調査

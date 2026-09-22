@@ -6,7 +6,7 @@ use std::fmt::{Display, Formatter};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-pub const PROTOCOL_VERSION: u32 = 2;
+pub const PROTOCOL_VERSION: u32 = 3;
 
 macro_rules! protocol_id {
     ($name:ident) => {
@@ -126,6 +126,13 @@ pub enum CoreActionData {
         message: Option<String>,
         #[ts(type = "Uint8Array")]
         data: Vec<u8>,
+    },
+    SendAttachmentFile {
+        channel_id: String,
+        file_name: String,
+        content_type: Option<String>,
+        message: Option<String>,
+        path: String,
     },
     AddReaction {
         channel_id: String,

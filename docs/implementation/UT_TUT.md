@@ -12,7 +12,7 @@ Rust Coreへ次を移植する。
 - `origin`画像添付
 - 実在Assetだけを対象にした`file`選択と添付
 
-Motionは次工程でTask Runtimeと同時に追加する。現時点の`motion`指定は既存の不正指定Messageを返す。
+Motionは旧実装を移植せず、`docs/decisions/MOTION_RENDERING_V2.md`の新設計をTask Runtimeと同時に追加する。現時点の`motion`指定は既存の不正指定Messageを返す。
 
 ## 構成
 

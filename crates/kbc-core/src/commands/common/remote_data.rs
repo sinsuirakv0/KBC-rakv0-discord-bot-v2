@@ -1,4 +1,4 @@
-﻿//! `ut`と`tut`が共有する、有限なRemote snapshotとAsset存在確認を提供する。
+//! `ut`と`tut`が共有する、有限なRemote snapshotとAsset存在確認を提供する。
 
 use std::collections::{HashMap, HashSet};
 use std::fmt::{Display, Formatter};
@@ -125,7 +125,7 @@ impl<T> CachedTextResource<T> {
 }
 
 #[derive(Clone)]
-pub(in crate::commands) struct RemoteAssetSource {
+pub(crate) struct RemoteAssetSource {
     base_url: &'static str,
     ttl: Duration,
     http: Arc<HttpService>,
@@ -139,11 +139,7 @@ struct AssetExistence {
 }
 
 impl RemoteAssetSource {
-    pub(in crate::commands) fn new(
-        base_url: &'static str,
-        ttl: Duration,
-        http: Arc<HttpService>,
-    ) -> Self {
+    pub(crate) fn new(base_url: &'static str, ttl: Duration, http: Arc<HttpService>) -> Self {
         Self {
             base_url,
             ttl,
@@ -213,6 +209,13 @@ impl RemoteAssetSource {
             message: None,
             data,
         })
+    }
+
+    pub(crate) async fn bytes(&self, relative_path: &str) -> Result<Vec<u8>, RemoteDataError> {
+        self.http
+            .get_bytes(&self.build_url(relative_path)?)
+            .await
+            .map_err(|error| RemoteDataError::new("asset", error.to_string()))
     }
 
     async fn check_exists(&self, relative_path: &str) -> Result<bool, RemoteDataError> {
@@ -291,13 +294,13 @@ fn is_safe_asset_path(value: &str) -> bool {
 }
 
 #[derive(Debug)]
-pub(in crate::commands) struct RemoteDataError {
+pub(crate) struct RemoteDataError {
     label: &'static str,
     reason: String,
 }
 
 impl RemoteDataError {
-    pub(in crate::commands) fn new(label: &'static str, reason: impl Into<String>) -> Self {
+    pub(crate) fn new(label: &'static str, reason: impl Into<String>) -> Self {
         Self {
             label,
             reason: reason.into(),

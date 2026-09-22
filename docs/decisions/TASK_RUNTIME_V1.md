@@ -4,11 +4,11 @@
 
 Phase 10の最初の実利用者は、`ut`と`tut`のモーション生成である。旧版はNode.js Worker threadとFFmpegを使い、共有の直列Queueで処理している。
 
-現時点のV2には`ut`/`tut`の検索、選択、Asset解決、Motion planがまだない。利用者なしにTask APIを実装すると、実際の入力・結果・進捗契約と合わないFrameworkを固定する危険がある。
+V2には`ut`/`tut`の検索、選択、Asset解決が実装済みであり、最初のTask利用者としてMotionを再設計する。Motionの詳細は`docs/decisions/MOTION_RENDERING_V2.md`を正とする。
 
 ## 決定
 
-Task Runtimeの設計境界はPhase 10で確定するが、production codeは最初のMotion task実装と同じ作業単位で追加する。
+Task Runtimeのproduction codeは最初のMotion task実装と同じ作業単位で追加する。旧Motion専用QueueやWorkerは移植しない。
 
 初期Task Runtimeは次に限定する。
 
@@ -32,24 +32,29 @@ Discordからの手動Cancel UIと`TaskCancellation` Protocol Eventは旧仕様�
 - 進捗編集の最短間隔: 2秒
 - FFmpeg thread: 1
 - Frame rate: 30 fps
+- 待機Queue: 1件
+- Queue timeout: 10分
 
-旧版の待機Queueには容量上限がない。V2では保守的な固定上限を設定するが、具体的な待機件数はMotion planとAssetの保持量を確認してから確定する。Queueには大きなAsset byte列を入れず、識別子と検証済みplanだけを保持する。
+旧版の待機Queueには容量上限がない。V2はactive 1件、waiting 1件から開始する。Queueには大きなAsset byte列を入れず、識別子と検証済みRequestだけを保持する。容量変更は本番のqueue waitとbusy回数を計測してから判断する。
 
 ## Actionとの接続
 
-Motion Commandは最初に進捗Messageを`sendMessage`し、その`actionResult`で得たmessage IDへTaskを結び付ける。
+Motion Taskは予約後に最初の進捗Messageを`sendMessage`し、その`actionResult`で得たmessage IDへTaskを結び付ける。Message送信に失敗した場合は重い処理を開始せず予約を解放する。
 
 ```text
 Command
+→ Task slot予約
 → 進捗Message送信
 → actionResult(messageId)
-→ Task Queue登録
+→ Task有効化・実行順待ち
 → editMessageによる進捗
 → sendAttachment
 → editMessageによる完了または失敗
 ```
 
 Taskの進捗・完了Actionは元Commandの`RequestId`を維持する。TypeScript AdapterはTask状態を持たず、既存のActionを実行するだけとする。
+
+Motionの圧縮済み出力は既存のinline binary Actionへ載せない。Task Runtimeが一時Fileを所有し、`sendAttachmentFile`の`actionResult`後に削除する。送信結果待ちもTask lifecycleに含め、成功・失敗・timeout・shutdownの全経路でcleanupする。詳細は`docs/decisions/MOTION_RENDERING_V2.md`を正とする。
 
 ## Backpressure
 

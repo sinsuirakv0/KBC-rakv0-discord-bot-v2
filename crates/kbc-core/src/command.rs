@@ -6,7 +6,7 @@ use std::fmt::{Display, Formatter};
 use std::future::Future;
 use std::pin::Pin;
 
-use kbc_protocol::CoreActionData;
+use kbc_protocol::{CoreActionData, RequestId};
 
 use crate::session::SessionRequest;
 
@@ -87,14 +87,21 @@ pub(crate) struct CommandContext {
     guild_id: Option<String>,
     channel_id: String,
     user_id: String,
+    request_id: RequestId,
 }
 
 impl CommandContext {
-    pub(crate) fn new(guild_id: Option<String>, channel_id: String, user_id: String) -> Self {
+    pub(crate) fn new(
+        guild_id: Option<String>,
+        channel_id: String,
+        user_id: String,
+        request_id: RequestId,
+    ) -> Self {
         Self {
             guild_id,
             channel_id,
             user_id,
+            request_id,
         }
     }
 
@@ -112,6 +119,10 @@ impl CommandContext {
 
     pub(crate) fn user_id(&self) -> &str {
         &self.user_id
+    }
+
+    pub(crate) fn request_id(&self) -> &RequestId {
+        &self.request_id
     }
 }
 

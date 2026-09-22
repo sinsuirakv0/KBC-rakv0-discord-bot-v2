@@ -1,6 +1,7 @@
 ﻿export interface DiscordAdapterConfig {
   discordToken: string;
   outgoingMessagePrefix: string;
+  ffmpegPath?: string;
   githubData?: {
     owner: string;
     repository: string;
@@ -13,6 +14,8 @@
     host: string;
   };
 }
+
+import ffmpegStaticPath from "ffmpeg-static";
 
 export function loadDiscordAdapterConfig(
   environment: NodeJS.ProcessEnv = process.env,
@@ -60,6 +63,7 @@ export function loadDiscordAdapterConfig(
   return {
     discordToken,
     outgoingMessagePrefix: environment.NODE_ENV === "production" ? "" : "[local] ",
+    ffmpegPath: environment.FFMPEG_PATH?.trim() || ffmpegStaticPath || undefined,
     githubData: githubDataOwner
       ? {
           owner: githubDataOwner,

@@ -14,13 +14,13 @@ npm run setup:local
 
 ## Buildして起動
 
-通常は次の1 Commandを使う。
+通常は次の1 Commandを使う。MotionなどCPU負荷の高い処理を本環境に近い速度で確認できるよう、Rust Native moduleはRelease profileでbuildする。
 
 ```text
 npm run local
 ```
 
-Rust Native moduleとTypeScriptをbuildした後、BotをLocalモードで起動する。送信MessageにはDiscord Adapterが`[local] `を付ける。
+Rust Native moduleをRelease profileで、TypeScriptを通常どおりbuildした後、BotをLocalモードで起動する。送信MessageにはDiscord Adapterが`[local] `を付ける。初回Release buildはDebug buildより時間がかかるが、以後は差分buildになる。
 
 ## Build済みの高速起動
 

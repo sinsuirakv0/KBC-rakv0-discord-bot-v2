@@ -2,6 +2,6 @@
 
 pub(super) mod file_picker;
 pub(super) mod output;
-pub(super) mod remote_data;
+pub(crate) mod remote_data;
 pub(super) mod schedule;
 pub(super) mod search;

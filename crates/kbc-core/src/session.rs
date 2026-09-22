@@ -26,6 +26,7 @@ pub(crate) type SessionFuture =
 pub(crate) struct SessionContext {
     channel_id: String,
     message_id: String,
+    request_id: RequestId,
 }
 
 impl SessionContext {
@@ -35,6 +36,10 @@ impl SessionContext {
 
     pub(crate) fn message_id(&self) -> &str {
         &self.message_id
+    }
+
+    pub(crate) fn request_id(&self) -> &RequestId {
+        &self.request_id
     }
 }
 
@@ -369,6 +374,7 @@ impl SessionManager {
         let context = SessionContext {
             channel_id: session.channel_id.clone(),
             message_id: session.message_id.clone(),
+            request_id: session.request_id.clone(),
         };
         let resume = match session.continuation.resume(context, emoji.to_owned()).await {
             Ok(resume) => resume,

@@ -1,8 +1,9 @@
-﻿//! 敵ユニット検索・画像・関連Fileを扱う`tut` Command。
+//! 敵ユニット検索・画像・関連Fileを扱う`tut` Command。
 
 mod data_source;
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -13,10 +14,13 @@ use crate::commands::common::file_picker::{
     AssetFileOption, NEXT_PAGE_EMOJI, NUMBER_EMOJIS, PREVIOUS_PAGE_EMOJI, file_picker,
 };
 use crate::commands::common::search::normalize_search_text;
+use crate::motion::request::{MotionRequest, parse_motion_arguments};
+use crate::motion::{MotionJob, MotionPlan};
 use crate::services::HttpService;
 use crate::session::{
     SessionContext, SessionContinuation, SessionFuture, SessionRequest, SessionResume,
 };
+use crate::task_runtime::{TaskRuntime, TaskSubmission, TaskSubmitError};
 
 use data_source::TutDataSource;
 
@@ -30,6 +34,9 @@ const IMAGE_ERROR_MESSAGE: &str = "敵画像の取得に失敗しました。";
 const INVALID_FILE_MESSAGE: &str =
     "fileの指定が正しくありません。o.tut help で使い方を確認してください。";
 const MISSING_FILE_MESSAGE: &str = "この敵に関連するファイルが見つかりませんでした。";
+const MISSING_MOTION_MESSAGE: &str = "この敵のモーション素材が見つかりませんでした。";
+const MOTION_BUSY_MESSAGE: &str =
+    "現在ほかのモーションを処理中です。完了してからもう一度お試しください。";
 const INVALID_MOTION_MESSAGE: &str =
     "motionの指定が正しくありません。o.tut help で使い方を確認してください。";
 const LIST_FOOTER: &str = "詳細は o.tut <ID> で表示できます。";
@@ -52,11 +59,12 @@ struct TutSearchMatch {
     matched_alias: Option<String>,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 enum TutOperation {
     Detail,
     Origin,
     File,
+    Motion(MotionRequest),
 }
 
 enum TutRequest {
@@ -75,10 +83,17 @@ pub(super) struct TutCommand {
     metadata: CommandMetadata,
     help: String,
     data_source: TutDataSource,
+    tasks: Arc<TaskRuntime>,
+    ffmpeg_path: Option<PathBuf>,
 }
 
 impl TutCommand {
-    pub(super) fn new(help: &str, http: Arc<HttpService>) -> Self {
+    pub(super) fn new(
+        help: &str,
+        http: Arc<HttpService>,
+        tasks: Arc<TaskRuntime>,
+        ffmpeg_path: Option<PathBuf>,
+    ) -> Self {
         Self {
             metadata: CommandMetadata {
                 name: "tut".to_owned(),
@@ -87,6 +102,8 @@ impl TutCommand {
             },
             help: help.to_owned(),
             data_source: TutDataSource::new(http),
+            tasks,
+            ffmpeg_path,
         }
     }
 
@@ -126,12 +143,12 @@ impl TutCommand {
             return Ok(message(channel_id, NOT_FOUND_MESSAGE));
         }
 
-        if matches.len() == 1 && !matches!(operation, TutOperation::Detail) {
+        if matches.len() == 1 && !matches!(&operation, TutOperation::Detail) {
             return self
                 .run_selected(context, matches.into_iter().next().unwrap(), operation)
                 .await;
         }
-        if matches.len() <= 3 && matches!(operation, TutOperation::Detail) {
+        if matches.len() <= 3 && matches!(&operation, TutOperation::Detail) {
             let mut output = CommandOutput::new();
             for matched in matches {
                 output.push(CoreActionData::SendMessage {
@@ -147,6 +164,8 @@ impl TutCommand {
                 matches.clone(),
                 operation,
                 self.data_source.clone(),
+                Arc::clone(&self.tasks),
+                self.ffmpeg_path.clone(),
             );
             let content = continuation.format("数字のリアクションで選択してください。");
             let session = SessionRequest::new(
@@ -180,6 +199,18 @@ impl TutCommand {
                 Ok(CommandOutput::single(action))
             }
             TutOperation::File => file_output(context, &matched, &self.data_source).await,
+            TutOperation::Motion(request) => {
+                motion_output(
+                    context.channel_id(),
+                    context.request_id(),
+                    &matched,
+                    request,
+                    &self.data_source,
+                    &self.tasks,
+                    self.ffmpeg_path.as_deref(),
+                )
+                .await
+            }
         }
     }
 }
@@ -204,6 +235,7 @@ fn parse_request(arguments: &[String]) -> TutRequest {
     let mut motion = false;
     let mut query_parts = Vec::new();
     let mut file_parts = Vec::new();
+    let mut motion_parts = Vec::new();
     for argument in arguments {
         let normalized = argument.to_ascii_lowercase();
         if normalized == "-f" || normalized == "-force" {
@@ -216,6 +248,8 @@ fn parse_request(arguments: &[String]) -> TutRequest {
             motion = true;
         } else if file {
             file_parts.push(argument.clone());
+        } else if motion {
+            motion_parts.push(argument.clone());
         } else if !motion {
             query_parts.push(argument.clone());
         }
@@ -235,7 +269,17 @@ fn parse_request(arguments: &[String]) -> TutRequest {
         };
     }
     if motion {
-        return TutRequest::InvalidMotion;
+        if origin {
+            return TutRequest::InvalidMotion;
+        }
+        let Some(request) = parse_motion_arguments(&motion_parts, &[]) else {
+            return TutRequest::InvalidMotion;
+        };
+        return TutRequest::Search {
+            query,
+            force,
+            operation: TutOperation::Motion(request),
+        };
     }
     TutRequest::Search {
         query,
@@ -508,6 +552,8 @@ struct TutSelection {
     operation: TutOperation,
     reactions: Vec<String>,
     data_source: TutDataSource,
+    tasks: Arc<TaskRuntime>,
+    ffmpeg_path: Option<PathBuf>,
 }
 
 impl TutSelection {
@@ -516,6 +562,8 @@ impl TutSelection {
         matches: Vec<TutSearchMatch>,
         operation: TutOperation,
         data_source: TutDataSource,
+        tasks: Arc<TaskRuntime>,
+        ffmpeg_path: Option<PathBuf>,
     ) -> Self {
         let reactions = NUMBER_EMOJIS[..matches.len()]
             .iter()
@@ -527,6 +575,8 @@ impl TutSelection {
             operation,
             reactions,
             data_source,
+            tasks,
+            ffmpeg_path,
         }
     }
 
@@ -551,7 +601,7 @@ impl SessionContinuation for TutSelection {
                 message_id: context.message_id().to_owned(),
                 content: self.format(&format!("選択済み: {}", format_label(matched))),
             }];
-            match self.operation {
+            match self.operation.clone() {
                 TutOperation::Detail => {
                     actions.push(CoreActionData::SendMessage {
                         channel_id: context.channel_id().to_owned(),
@@ -588,6 +638,20 @@ impl SessionContinuation for TutSelection {
                         Ok(SessionResume::complete(actions))
                     }
                 },
+                TutOperation::Motion(request) => {
+                    let output = motion_output(
+                        context.channel_id(),
+                        context.request_id(),
+                        matched,
+                        request,
+                        &self.data_source,
+                        &self.tasks,
+                        self.ffmpeg_path.as_deref(),
+                    )
+                    .await?;
+                    actions.extend(output.into_actions());
+                    Ok(SessionResume::complete(actions))
+                }
             }
         })
     }
@@ -662,6 +726,76 @@ fn message(channel_id: &str, content: impl Into<String>) -> CommandOutput {
         channel_id: channel_id.to_owned(),
         content: content.into(),
     })
+}
+
+fn resolve_motion_plan(matched: &TutSearchMatch, request: MotionRequest) -> MotionPlan {
+    let asset_id = format!("{:03}", matched.enemy.id);
+    let mut animation_paths = HashMap::new();
+    for segment in &request.segments {
+        animation_paths.entry(segment.motion).or_insert_with(|| {
+            format!(
+                "ImageData/{asset_id}_e0{}.maanim",
+                segment.motion.asset_index()
+            )
+        });
+    }
+    MotionPlan {
+        format: request.format,
+        full: request.full,
+        filename_stem: format!("tut-{asset_id}-motion"),
+        preview_scale: if matched.enemy.id == 0 { 2.25 } else { 1.0 },
+        segments: request.segments,
+        sprite_path: format!("Number/{asset_id}_e.png"),
+        imgcut_path: format!("ImageData/{asset_id}_e.imgcut"),
+        model_path: format!("ImageData/{asset_id}_e.mamodel"),
+        animation_paths,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn motion_output(
+    channel_id: &str,
+    request_id: &kbc_protocol::RequestId,
+    matched: &TutSearchMatch,
+    request: MotionRequest,
+    data_source: &TutDataSource,
+    tasks: &TaskRuntime,
+    ffmpeg_path: Option<&std::path::Path>,
+) -> Result<CommandOutput, crate::command::CommandExecutionError> {
+    let plan = resolve_motion_plan(matched, request);
+    let mut paths = vec![
+        plan.sprite_path.clone(),
+        plan.imgcut_path.clone(),
+        plan.model_path.clone(),
+    ];
+    paths.extend(plan.animation_paths.values().cloned());
+    let assets = data_source.assets();
+    let existing = match assets.find_existing(&paths).await {
+        Ok(existing) => existing,
+        Err(error) => {
+            eprintln!("Enemy motion asset check failed: {error}");
+            return Ok(message(channel_id, DATA_ERROR_MESSAGE));
+        }
+    };
+    if paths.iter().any(|path| !existing.contains(path)) {
+        return Ok(message(channel_id, MISSING_MOTION_MESSAGE));
+    }
+    let job = MotionJob::new(plan, assets, ffmpeg_path.map(PathBuf::from));
+    match tasks.submit(TaskSubmission::new(
+        request_id.clone(),
+        channel_id.to_owned(),
+        format!(
+            "⏳ 敵 {} {} のモーション生成を受け付けました",
+            matched.enemy.id,
+            display_name(matched)
+        ),
+        Box::new(job),
+    )) {
+        Ok(_) => Ok(CommandOutput::new()),
+        Err(TaskSubmitError::Busy | TaskSubmitError::Unavailable) => {
+            Ok(message(channel_id, MOTION_BUSY_MESSAGE))
+        }
+    }
 }
 
 #[cfg(test)]
