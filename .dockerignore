@@ -1,0 +1,8 @@
+node_modules
+target
+apps/*/dist
+*.tsbuildinfo
+native
+.git
+.env
+docs

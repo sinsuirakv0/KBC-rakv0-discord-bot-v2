@@ -1,0 +1,30 @@
+{
+  "name": "kbc-rakv0-discord-bot-v2",
+  "version": "0.1.0",
+  "private": true,
+  "workspaces": [
+    "apps/*"
+  ],
+  "scripts": {
+    "clean:ts": "tsc -b --clean",
+    "generate:protocol": "node scripts/run-cargo.js run --locked --quiet -p kbc-protocol --bin generate_types",
+    "compile:ts": "npm run clean:ts && tsc -b",
+    "build:ts": "npm run generate:protocol && npm run compile:ts",
+    "typecheck": "npm run generate:protocol && tsc -p apps/discord/tsconfig.json --noEmit",
+    "build:rust": "node scripts/run-cargo.js build --workspace",
+    "check:rust": "node scripts/run-cargo.js check --workspace",
+    "build:native": "node scripts/run-cargo.js build --locked -p kbc-node && npm run copy:native",
+    "copy:native": "node scripts/copy-native.js",
+    "build": "npm run build:native && npm run build:ts",
+    "smoke:protocol": "npm run smoke:runtime",
+    "smoke:runtime": "npm run build && node apps/discord/dist/protocol/smoke.js",
+    "setup:local": "node scripts/setup-local-env.js",
+    "local": "npm run build && npm run start:local",
+    "start:local": "node scripts/start-local.js",
+    "start": "npm run start --workspace @kbc/discord-adapter"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.5.0"
+  }
+}
