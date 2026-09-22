@@ -1,6 +1,6 @@
 ﻿# Phase 10以降 作業チェックポイント
 
-- 状態: 非Motion Command移植完了、本環境移行前のLocal検証完了
+- 状態: 非Motion Command移植完了、V2本環境稼働開始
 - 最終更新: 2026-09-22
 - 対象: 非Motion Command、Storage、Notification Runtime
 
@@ -43,18 +43,20 @@
 - Webhook: live health 200、認証なし401、不正Event 400を確認した。
 - Local Bot: Discord login、通知health 200 ready、SIGINT正常停止を確認した。
 - Docker: Linux release image buildとContainer内のRust Native Runtime Smokeが成功した。
+- Northflank: `sinsuirakv0/KBC-rakv0-discord-bot-v2`の`976c7c3`をDockerfileからbuildし、既存Serviceへ手動deployした。旧Container終了後にV2が起動し、1/1 Runningを確認した。
+- 本環境: Discord login、`/health/live` 200 alive、`/health` 200 ready、GitHub Storageと通知受信設定の復元を確認した。
 - Rustfmt、Clippy警告ゼロ、Rust test 9件、TypeScript typecheck、Native/TypeScript buildが成功した。
 
-## 本環境移行前後に残る作業
+## 本環境移行後に残る作業
 
-1. 本環境へV2の環境変数を設定して起動する。
-2. 実際の更新検知Eventで、初回投稿、種類追記、SKD詳細、KBCリンク、永続Checkpointを確認する。
-3. 本環境の通常利用を観測してからMotion設計へ戻る。
+1. 実際の更新検知Eventで、初回投稿、種類追記、SKD詳細、KBCリンク、永続Checkpointを確認する。
+2. 本環境の通常Commandを利用者側から確認する。
+3. 本環境の計測結果を取りながらMotion設計・移植・改善・高速化へ進む。
 
 実在しない有効EventによるE2E試験は、永続通知履歴とDiscord Channelを汚すため実施していない。最初の実更新をE2E確認に使う。
 
 ## 再開位置
 
-次回はNorthflankの旧版を停止または置換し、同じDiscord TokenとStorage/通知環境変数でV2を起動する。旧版とV2を常時並行稼働させない。
+Northflankの既存ServiceはV2 Repositoryへ切り替え済みで、CI/CDも再有効化した。次回は本環境の通常Commandと最初の実更新通知を観測しつつ、Motion設計へ進む。
 
 `D:\KBC\KBC-rakv0-discord-bot`は読み取りだけに使用し、変更していない。

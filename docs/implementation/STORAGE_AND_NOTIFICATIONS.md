@@ -69,3 +69,9 @@ SKD詳細は`o.skd`と同じParser、差分、名称DataSource、Formatterを使
 実在しない正常Eventを送る試験は、永続履歴やDiscord Channelを汚すため行わない。不正Eventの拒否とHTTP状態をLocalで確認し、正常配送の最終確認は最初の実更新で行う。
 
 Localと旧本環境が同じ設定Fileへ同時に書き込み、GitHubのSHA競合が発生することを実Discordで確認した。有限な再試行後は登録に成功した。通常運用では旧版とV2を常時並行稼働させない。
+
+## 本環境
+
+2026-09-22にNorthflankの既存Serviceのbuild sourceをprivate Repository `sinsuirakv0/KBC-rakv0-discord-bot-v2`へ変更した。自動deployを一時停止してDocker build成功を確認した後、commit `976c7c3`を手動deployし、旧Container終了後にV2が起動した。公開URLとPort 3000、既存のDiscord・GitHub Storage・Event Update環境変数は維持した。
+
+起動後はDiscord login、`/health/live`の200 alive、`/health`の200 ready、Northflank上の1/1 Runningを確認した。CI/CDはV2 Repositoryを対象として再有効化した。
