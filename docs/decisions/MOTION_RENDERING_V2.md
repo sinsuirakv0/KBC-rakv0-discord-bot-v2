@@ -171,7 +171,13 @@ FFmpegの`-threads 1`は入力より前ではなく、libx264の出力Optionと�
 
 Frameごとの進捗文字列生成は16 frameごとに間引く。Task Runtime側のDiscord編集は従来どおり2秒間隔でcoalesceされるため、表示頻度は変えずHot loop内のAllocationだけを減らす。
 
-Frameごとの`spawn_blocking`除去も同条件で3回比較した。描画worker区間は短くなったが、encode中央値は16,897 msから17,396 msへ約3.0%悪化した。低CPU環境ではRust描画とFFmpegのSchedulingへ影響するため、現行のblocking workerを維持する。全Frameを保持するpipelineや追加Channelも導入しない。
+CPU 0.2相当の初回比較では、Frameごとの`spawn_blocking`除去により描画worker区間は短くなった一方、encode中央値が16,897 msから17,396 msへ約3.0%悪化したため、いったん現行workerを維持した。
+
+その後、最適化版を0.1 vCPUのNorthflank本番へ反映したところ、旧版のtotal 21,110 msから13,295 msへ約37.0%短縮した。新しい内訳では`frame_worker_ms=7,993`、`frame_render_ms=2,862`、`spawn_overhead_ms=5,131`、`encoder_write_ms=4,906`となり、Frameごとのblocking worker待機がencode全体の約39.5%を占めた。
+
+本番と同じ0.1 CPU制限のDockerで再比較した結果、`spawn_blocking`ありのencode中央値39,005 ms・total中央値40,017 msに対し、直接描画はencode中央値36,391 ms・total中央値37,382 msだった。直接描画がend-to-endで約6.7%短く、本番ではさらに大きなScheduling待機が観測されたため、MP4/GIFのFrame描画をasync loop内の直接呼び出しへ変更する。
+
+描画後は各FrameのFFmpeg書き込みでawaitするため、345 frameを連続してasync executor上で処理し続ける構造にはならない。active Motion taskは1件、RGBA bufferは従来どおり1枚とし、全Frameを保持するpipelineや追加Channelは導入しない。
 
 代表素材の再利用Frameは345 frame中2 frame（約0.58%）だった。CFRを崩すVFR化、DrawPacket全Frame cache、完成MP4 cacheはこの改善では導入しない。現在の支配区間は`encoder_write_ms`であり、低い再利用率に対してMemory、Invalidation、複雑性を増やす根拠がない。
 
@@ -304,7 +310,7 @@ Task全体の段階は重複しない区間として記録し、MP4 Encoder内�
 - 重複FrameをVFR化してFrame数を変える最適化
 - 全FrameのDrawPacket cacheと完成Motion file cache（現在の支配区間・再利用率に対して根拠不足）
 - FFmpeg thread数のauto設定（CPU 0.2相当で明示的1 threadより遅い）
-- Frameごとの`spawn_blocking`除去（end-to-end中央値が改善しない）
+- Frame全体を保持するRender pipelineと追加Channel
 - Motion専用Queue、HTTP client、timeout、progress基盤
 
 ## 実装順序

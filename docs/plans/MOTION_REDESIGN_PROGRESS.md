@@ -1,6 +1,6 @@
 ﻿# Motion再設計 作業チェックポイント
 
-- 状態: Task Runtime・Motion再設計・低CPU向けMP4高速化を実装済み、本環境反映待ち
+- 状態: Task Runtime・Motion再設計・Encoder高速化を本環境確認済み、直接描画の本環境反映待ち
 - 最終更新: 2026-09-23
 - 設計判断: `docs/decisions/MOTION_RENDERING_V2.md`
 
@@ -42,8 +42,12 @@
 - FFmpegのthread指定を入力側の`-threads 1`からlibx264出力側の`-threads:v 1`へ修正し、`-filter_threads 1`を追加した。CPU 0.2相当のDocker制限下では、変更前のencode中央値22,091msから16,897msへ約23.5%短縮した。auto threadの中央値24,505msより約31.1%短いため、明示的1 threadを採用した。
 - Motionの進捗生成を16 frameごとへ間引いた。Discord編集は従来どおりTask Runtimeが2秒間隔でcoalesceするため、利用者向けの進捗頻度は維持する。
 - 代表素材の再利用Frameは2/345（約0.58%）だった。VFR、全Frame DrawPacket cache、完成MP4 cacheは費用に対する効果が不足するため導入しない。
-- per-frame `spawn_blocking`除去を同条件で比較したが、encode中央値が16,897msから17,396msへ約3.0%悪化したため採用しなかった。全Frame bufferや追加pipelineも導入しない。
+- 0.2 CPUでper-frame `spawn_blocking`除去を比較した際は、encode中央値が16,897msから17,396msへ約3.0%悪化したため、初回投入では採用しなかった。全Frame bufferや追加pipelineも導入しない。
 - 最適化後MP4を全Frame decodeし、345 frame、488x390、30fps、11.5秒、`yuv420p`を確認した。変更前出力との復号後SSIMは0.998678だった。
+- commit `3115309`をNorthflankへ一括反映し、commit選択、1/1 Running、`/health/live` 200 alive、`/health` 200 readyを確認した。
+- 0.1 vCPUの本環境で最適化後Motionを実行した。queue wait 0ms、asset 51ms、prepare 238ms、encode 13,005ms、total 13,295msで、最適化前total 21,110msから約37.0%短縮した。出力は1,405,036 bytesだった。
+- 本番のencode内訳はFrame worker 7,993ms、純描画2,862ms、`spawn_blocking`待機5,131ms、pipe write 4,906ms、finalize 13msだった。blocking worker待機がencodeの約39.5%を占めたため、0.1 CPU条件で直接描画を再評価した。
+- 0.1 CPU制限Dockerの3回中央値は、`spawn_blocking`ありでencode 39,005ms・total 40,017ms、直接描画でencode 36,391ms・total 37,382msだった。直接描画がend-to-endで約6.7%短いため、Frameごとの`spawn_blocking`を除去した。RGBA buffer 1枚、逐次FFmpeg書き込み、active task 1件は維持する。
 
 ## 実装段階
 
@@ -115,18 +119,27 @@
 - [x] libx264出力側へthread数を明示
 - [x] CPU 0.2相当で1 thread / autoを3回比較
 - [x] 進捗生成の間引き
-- [x] per-frame `spawn_blocking`除去を比較し不採用
+- [x] 0.2 CPUでper-frame `spawn_blocking`除去を比較し一度不採用（M8で再評価）
 - [x] Frame数・寸法・duration・pixel format・見た目を確認
-- [ ] 一括で本環境へ反映し、詳細logを取得
+- [x] 一括で本環境へ反映し、詳細logを取得
+
+### M8 0.1 vCPU向け直接描画
+
+- [x] 本番詳細logでblocking worker待機を特定
+- [x] 0.1 CPU制限Dockerでblocking workerありを3回計測
+- [x] 0.1 CPU制限Dockerで直接描画を3回計測
+- [x] 全Frame Bufferや追加Channelを作らず直接描画へ変更
+- [x] MP4全Frame decodeとworkspace cleanupを確認
+- [ ] 本環境へ反映し、詳細logとDiscord出力を確認
 
 ## 再開位置
 
 次回はこの順序で再開する。
 
-1. 最適化一式を1回だけpushし、NorthflankのDeployment成功とhealth checkを確認する。
+1. 直接描画をpushし、NorthflankのDeployment成功とhealth checkを確認する。
 2. 本環境Discordで710-fの代表Motionを実行し、詳細な`Motion generation completed` logを取得する。
-3. `encoder_write_ms`、`frame_render_ms`、`spawn_overhead_ms`、`queue_wait_ms`をCPU制限Docker結果と比較する。
-4. 出力が正常で改善が再現すれば低CPU向け高速化を完了とする。改善しない場合も推測でCacheやVFRを追加せず、新しい内訳から次の対象を決める。
+3. `frame_render_ms`、`encoder_write_ms`、`total_ms`をcommit `3115309`の結果と比較する。
+4. 出力が正常で改善が再現すれば低CPU向け高速化を完了とする。改善しない場合は直接描画だけを戻し、新しいQueue・Cache・Bufferは追加しない。
 
 再開時に最初に読むファイルは、`docs/decisions/MOTION_RENDERING_V2.md`、`docs/decisions/TASK_RUNTIME_V1.md`、このチェックポイント、`crates/kbc-core/src/task_runtime.rs`の順とする。
 

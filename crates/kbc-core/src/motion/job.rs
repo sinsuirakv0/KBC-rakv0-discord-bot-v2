@@ -320,7 +320,7 @@ async fn render_mp4(
             stop_encoder(&mut child).await;
             return Err(MotionError::render("MP4 rendering was cancelled"));
         }
-        let rendered = match render_frame(prepared, index, context).await {
+        let rendered = match render_frame(prepared, index, context) {
             Ok(rendered) => rendered,
             Err(error) => {
                 stop_encoder(&mut child).await;
@@ -392,7 +392,7 @@ async fn render_gif(
     let (palette_child, mut palette_stdin, palette_stderr) =
         start_encoder(ffmpeg, &palette_arguments)?;
     for index in sample_indices(prepared.frames.len()) {
-        prepared = render_frame(prepared, index, context).await?.prepared;
+        prepared = render_frame(prepared, index, context)?.prepared;
         write_rgba(&mut palette_stdin, prepared.rgba(), context).await?;
     }
     drop(palette_stdin);
@@ -431,7 +431,7 @@ async fn render_gif(
     let (mut child, mut stdin, stderr) = start_encoder(ffmpeg, &arguments)?;
     let total = prepared.frames.len();
     for index in 0..total {
-        prepared = match render_frame(prepared, index, context).await {
+        prepared = match render_frame(prepared, index, context) {
             Ok(rendered) => rendered.prepared,
             Err(error) => {
                 stop_encoder(&mut child).await;
@@ -451,7 +451,7 @@ async fn render_gif(
     Ok(prepared)
 }
 
-async fn render_frame(
+fn render_frame(
     mut prepared: PreparedMotion,
     index: usize,
     context: &TaskContext,
@@ -459,18 +459,13 @@ async fn render_frame(
     if context.cancellation().is_cancelled() {
         return Err(MotionError::render("motion rendering was cancelled"));
     }
-    let worker_started = Instant::now();
-    let (prepared, reused, render_elapsed) = spawn_blocking(move || {
-        let render_started = Instant::now();
-        let reused = prepared.render_rgba_frame(index)?;
-        Ok::<_, MotionError>((prepared, reused, render_started.elapsed()))
-    })
-    .await
-    .map_err(|error| MotionError::render(format!("frame worker failed: {error}")))??;
+    let render_started = Instant::now();
+    let reused = prepared.render_rgba_frame(index)?;
+    let render_elapsed = render_started.elapsed();
     Ok(RenderedFrame {
         prepared,
         reused,
-        worker_elapsed: worker_started.elapsed(),
+        worker_elapsed: render_elapsed,
         render_elapsed,
     })
 }
