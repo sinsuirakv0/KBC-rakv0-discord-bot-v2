@@ -2,6 +2,7 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Instant;
 
 use kbc_protocol::{
     ActionId, CoreAction, CoreActionData, CoreEvent, CoreEventData, EventId, PROTOCOL_VERSION,
@@ -61,8 +62,11 @@ impl CommandRuntime {
         else {
             return None;
         };
-        let input = parse_command_input(&content, COMMAND_PREFIX)?;
-        let command = self.registry.resolve(&input.name)?;
+        let ParsedCommandInput {
+            name: command_name,
+            arguments,
+        } = parse_command_input(&content, COMMAND_PREFIX)?;
+        let command = self.registry.resolve(&command_name)?;
         if command.metadata().guild_only && guild_id.is_none() {
             return None;
         }
@@ -74,16 +78,22 @@ impl CommandRuntime {
             member_role_ids,
             request_id.clone(),
         );
-        let output = match command.execute(context, input.arguments).await {
+        let execution_started = Instant::now();
+        let output = match command.execute(context, arguments).await {
             Ok(output) => output,
             Err(error) => {
-                eprintln!("Command execution failed: {error}");
+                eprintln!(
+                    "Command execution failed: command={} request_id={} error={error}",
+                    command_name,
+                    request_id.as_str(),
+                );
                 CommandOutput::single(kbc_protocol::CoreActionData::SendMessage {
                     channel_id,
                     content: "❌ コマンドの実行に失敗しました".to_owned(),
                 })
             }
         };
+        let execution_ms = execution_started.elapsed().as_millis();
         let (action_data, session) = output.into_parts();
         let actions = action_data
             .into_iter()
@@ -100,6 +110,13 @@ impl CommandRuntime {
                 SessionRegistration::new(action.action_id.clone(), request_id.clone(), request)
             })
         });
+        eprintln!(
+            "Command completed: command={} execution_ms={} actions={} request_id={}",
+            command_name,
+            execution_ms,
+            actions.len(),
+            request_id.as_str(),
+        );
         Some(CommandActionBatch { actions, session })
     }
 }

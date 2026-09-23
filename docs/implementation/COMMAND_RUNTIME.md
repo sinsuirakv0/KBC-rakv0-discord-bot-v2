@@ -81,6 +81,16 @@ o.help ignored → help index
 
 個別CommandのUnit Testは追加しない。Compilerとこの境界Smokeを主な防衛線とする。
 
+## 軽量な実行計測
+
+解決済みの通常Commandは、成功・失敗のどちらでも実行完了時に次の1行を標準Errorへ記録する。
+
+```text
+Command completed: command=gatya execution_ms=183 actions=2 request_id=request:...
+```
+
+`execution_ms`は`Command::execute()`の所要時間、`actions`は失敗時の共通Error返信を含む生成Action数である。Prefix外、未知Command、Guild限定CommandのDM入力は実行されないため記録しない。Event Queue待機時間はProtocol fieldを増やしてまで導入せず、必要性が実測された場合に別途扱う。
+
 ## Phase 5検証結果
 
 - Rust compiler、Clippy、rustfmt、TypeScript typecheckが成功した。
