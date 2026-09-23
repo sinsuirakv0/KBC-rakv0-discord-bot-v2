@@ -1,4 +1,4 @@
-//! 味方キャラ検索・画像・関連Fileを扱う`ut` Command。
+﻿//! 味方キャラ検索・画像・関連Fileを扱う`ut` Command。
 
 mod data_source;
 
@@ -20,7 +20,9 @@ use crate::services::HttpService;
 use crate::session::{
     SessionContext, SessionContinuation, SessionFuture, SessionRequest, SessionResume,
 };
-use crate::task_runtime::{TaskRuntime, TaskSubmission, TaskSubmitError};
+use crate::task_runtime::{
+    TaskContext, TaskFailure, TaskFuture, TaskJob, TaskRuntime, TaskSubmission, TaskSubmitError,
+};
 
 use data_source::UtDataSource;
 
@@ -293,18 +295,15 @@ impl UtCommand {
             UtOperation::File(request) => {
                 file_output(context, matched, request, &self.data_source).await
             }
-            UtOperation::Motion(request) => {
-                motion_output(
-                    context.channel_id(),
-                    context.request_id(),
-                    matched,
-                    request,
-                    &self.data_source,
-                    &self.tasks,
-                    self.ffmpeg_path.as_deref(),
-                )
-                .await
-            }
+            UtOperation::Motion(request) => motion_output(
+                context.channel_id(),
+                context.request_id(),
+                matched,
+                request,
+                &self.data_source,
+                &self.tasks,
+                self.ffmpeg_path.as_deref(),
+            ),
         }
     }
 }
@@ -982,8 +981,7 @@ impl SessionContinuation for UtSelection {
                         &self.data_source,
                         &self.tasks,
                         self.ffmpeg_path.as_deref(),
-                    )
-                    .await?;
+                    )?;
                     actions.extend(output.into_actions());
                     Ok(SessionResume::complete(actions))
                 }
@@ -1114,8 +1112,65 @@ fn resolve_motion_plan(
     })
 }
 
+struct UtMotionJob {
+    matched: UtSearchMatch,
+    request: MotionRequest,
+    data_source: UtDataSource,
+    ffmpeg_path: Option<PathBuf>,
+}
+
+impl TaskJob for UtMotionJob {
+    fn run(self: Box<Self>, context: TaskContext) -> TaskFuture {
+        Box::pin(async move {
+            let Self {
+                matched,
+                request,
+                data_source,
+                ffmpeg_path,
+            } = *self;
+            context.report("⏳ モーション素材を確認しています");
+            let unit_buy = data_source.fetch_unit_buy().await.map_err(|error| {
+                TaskFailure::new(
+                    DATA_ERROR_MESSAGE,
+                    format!("UnitBuy retrieval for motion failed: {error}"),
+                )
+            })?;
+            let plan = resolve_motion_plan(&unit_buy, &matched, request).ok_or_else(|| {
+                TaskFailure::new(MISSING_MOTION_MESSAGE, "unit motion plan is unavailable")
+            })?;
+            let paths = motion_asset_paths(&plan);
+            let assets = data_source.assets();
+            let existing = assets.find_existing(&paths).await.map_err(|error| {
+                TaskFailure::new(
+                    DATA_ERROR_MESSAGE,
+                    format!("Character motion asset check failed: {error}"),
+                )
+            })?;
+            if paths.iter().any(|path| !existing.contains(path)) {
+                return Err(TaskFailure::new(
+                    MISSING_MOTION_MESSAGE,
+                    "unit motion assets are missing",
+                ));
+            }
+            Box::new(MotionJob::new(plan, assets, ffmpeg_path))
+                .run(context)
+                .await
+        })
+    }
+}
+
+fn motion_asset_paths(plan: &MotionPlan) -> Vec<String> {
+    let mut paths = vec![
+        plan.sprite_path.clone(),
+        plan.imgcut_path.clone(),
+        plan.model_path.clone(),
+    ];
+    paths.extend(plan.animation_paths.values().cloned());
+    paths
+}
+
 #[allow(clippy::too_many_arguments)]
-async fn motion_output(
+fn motion_output(
     channel_id: &str,
     request_id: &kbc_protocol::RequestId,
     matched: &UtSearchMatch,
@@ -1124,41 +1179,20 @@ async fn motion_output(
     tasks: &TaskRuntime,
     ffmpeg_path: Option<&std::path::Path>,
 ) -> Result<CommandOutput, crate::command::CommandExecutionError> {
-    let unit_buy = match data_source.fetch_unit_buy().await {
-        Ok(unit_buy) => unit_buy,
-        Err(error) => {
-            eprintln!("UnitBuy retrieval for motion failed: {error}");
-            return Ok(message(channel_id, DATA_ERROR_MESSAGE));
-        }
+    let initial_message = format!(
+        "⏳ {} {} のモーション生成を受け付けました",
+        matched.unit.id, matched.unit.forms[0].name
+    );
+    let job = UtMotionJob {
+        matched: matched.clone(),
+        request,
+        data_source: data_source.clone(),
+        ffmpeg_path: ffmpeg_path.map(PathBuf::from),
     };
-    let Some(plan) = resolve_motion_plan(&unit_buy, matched, request) else {
-        return Ok(message(channel_id, MISSING_MOTION_MESSAGE));
-    };
-    let mut paths = vec![
-        plan.sprite_path.clone(),
-        plan.imgcut_path.clone(),
-        plan.model_path.clone(),
-    ];
-    paths.extend(plan.animation_paths.values().cloned());
-    let assets = data_source.assets();
-    let existing = match assets.find_existing(&paths).await {
-        Ok(existing) => existing,
-        Err(error) => {
-            eprintln!("Character motion asset check failed: {error}");
-            return Ok(message(channel_id, DATA_ERROR_MESSAGE));
-        }
-    };
-    if paths.iter().any(|path| !existing.contains(path)) {
-        return Ok(message(channel_id, MISSING_MOTION_MESSAGE));
-    }
-    let job = MotionJob::new(plan, assets, ffmpeg_path.map(PathBuf::from));
     match tasks.submit(TaskSubmission::new(
         request_id.clone(),
         channel_id.to_owned(),
-        format!(
-            "⏳ {} {} のモーション生成を受け付けました",
-            matched.unit.id, matched.unit.forms[0].name
-        ),
+        initial_message,
         Box::new(job),
     )) {
         Ok(_) => Ok(CommandOutput::new()),
