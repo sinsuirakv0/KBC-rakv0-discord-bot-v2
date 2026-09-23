@@ -1,6 +1,6 @@
 ﻿# Botメンテナー実装チェックポイント
 
-- 状態: 実装・Local実Discord確認完了、本環境反映待ち
+- 状態: 実装・Local実Discord確認・本環境反映完了
 - 最終更新: 2026-09-24
 
 ## 実装済み
@@ -15,12 +15,13 @@
 - Rust test 17件、Rust workspace check、通常LibraryのClippy警告ゼロ、TypeScript typecheck、Native Runtime smokeが成功した。
 - Discord Developer PortalのServer Members Intentを有効化し、Local Botが正常にloginした。
 - 固定Bot管理者によるメンテナー登録、GitHub Storageへの保存、`list`での現在Guild内ユーザー名表示を実Discordで確認した。
+- commit `5ee9566`をmainへpushし、Northflankのbuild・deployment `success`、`/health/live` 200 alive、`/health` 200 readyを確認した。
 
 ## 残作業
 
 1. 登録対象が固定Bot管理者ではない場合、対象ユーザー本人または対象ロール所持者で`o.push`が通ることを確認する。
 2. 追加した登録対象が試験専用で不要なら末尾`del`で削除する。
-3. Commit・push後、本環境のloginと`o.maint maintainer list`を確認する。
+3. 本環境で`o.maint maintainer list`を実行し、Localと同じ一覧が返ることを確認する。
 
 ## 補足
 
