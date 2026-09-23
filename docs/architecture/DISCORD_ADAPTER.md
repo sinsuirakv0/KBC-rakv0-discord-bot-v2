@@ -43,9 +43,24 @@ Discord.jsのEvent listenerはCoreのQueue空きをawaitしてGatewayへbackpres
 
 CommandごとのQueueは作らない。容量変更は実運用のqueue waitとoverflowを計測してから判断する。
 
+Dispatcherは現在のoutstanding数、起動後のhigh-water mark、overflow回数を保持する。通常時はhigh-water markが更新された時だけ、overflow時は毎回、次の形式で記録する。Eventの種類別dropや優先制御は行わず、capacity 64到達時のfatal shutdown方針は維持する。
+
+```text
+Event dispatcher metrics: outstanding=4 high_water=4 overflow_count=0
+```
+
 ## 4. Core Action
 
-Actionは1件ずつ順番に実行する。
+ActionはAdapter内の有限Dispatcherで実行する。
+
+- 全体同時実行数: 3
+- 実行中と待機中の合計: 最大16件
+- Channelを持つAction: `channelId`ごとにFIFO
+- `resolveGuildMembers`: `guildId`ごとにFIFO
+
+同一Channelでは、複数返信の表示順、`clearReactions`後の編集・返信、通知の送信後編集を維持する必要があるため直列実行する。Session、Task Runtime、Notification ServiceがDiscord操作の結果に依存する後続Actionは、先行Actionの`actionResult`をCoreが受信してから生成される。したがって`ActionId`の対応を維持したまま、異なるChannelのActionは並行実行できる。
+
+Dispatcherは待機中の先頭だけを機械的に実行せず、現在実行中ではないordering keyの最古Actionを選ぶ。同一Channelの待機Actionが実行枠を占有して、別Channelを再び停止させないためである。上限到達時は`nextAction()`の取得を止め、Coreのbounded Action Queueへbackpressureを返す。
 
 | Core Action | Discord操作 | 成功時messageId |
 |---|---|---|
@@ -58,7 +73,7 @@ Actionは1件ずつ順番に実行する。
 | `clearReactions` | MessageのReactionを全削除 | なし |
 | `resolveGuildMembers` | 指定ユーザー・ロールIDに一致するGuild memberを有限件解決 | `membersResolved` |
 
-成功・失敗にかかわらず、実行結果を`actionResult`としてCoreへ返す。Adapterは自動再試行せず、失敗を安定したcodeとretry可否へ分類する。内部ErrorやStack TraceはProtocolへ含めず、Local logだけへ出す。
+成功・失敗にかかわらず、元の`ActionId`と`RequestId`を維持した結果を`actionResult`としてCoreへ返す。異なるordering keyの結果順は実行完了順となるが、Session Manager、Task Runtime、Notification Serviceは`ActionId`で待機元を特定する。Adapterは自動再試行せず、失敗を安定したcodeとretry可否へ分類する。内部ErrorやStack TraceはProtocolへ含めず、Local logだけへ出す。
 
 Message送信と編集では`allowedMentions.parse`を空にする。Coreからの文字列だけで意図せずUser、Role、全員へmentionしないためである。将来mentionが必要になった場合は、許可対象をProtocolへ明示する。
 
@@ -91,9 +106,9 @@ Config読込
 ```text
 新規Gateway Event停止
 → Discord Client破棄
-→ Adapter Event FIFO停止
+→ Action Dispatcherの新規受付停止・待機Action破棄とAdapter Event FIFO停止
 → NativeCore shutdown
-→ Action loop終了待ち
+→ Action loopと実行中Actionの終了待ち
 ```
 
 ## 7. Command経路

@@ -14,9 +14,13 @@ import type { Server } from "node:http";
 import type { DiscordAdapterConfig } from "../config";
 import { createEventUpdateServer } from "../external-events/server";
 import { createCore, type NativeCore } from "../protocol/native";
-import type { ActionOutcome, CoreEvent } from "../protocol";
+import type { ActionOutcome, CoreAction, CoreEvent } from "../protocol";
+import { CoreActionDispatcher } from "./action-dispatcher";
 import { createActionFailure, executeCoreAction } from "./actions";
-import { CoreEventDispatcher } from "./event-dispatcher";
+import {
+  CoreEventDispatcher,
+  type EventDispatcherMetrics,
+} from "./event-dispatcher";
 import {
   createActionResultEvent,
   createMessageCreateEvent,
@@ -24,16 +28,20 @@ import {
 } from "./events";
 
 const EVENT_BUFFER_CAPACITY = 64;
+const ACTION_CONCURRENCY = 3;
+const ACTION_DISPATCH_CAPACITY = 16;
 
 export interface DiscordAdapterCallbacks {
   onReady(userTag: string): void;
   onActionError(actionId: string, error: unknown): void;
   onNotificationError(error: unknown): void;
   onFatalError(error: unknown): void;
+  onEventDispatcherMetrics?(metrics: EventDispatcherMetrics): void;
 }
 
 export class DiscordAdapter {
   private readonly eventDispatcher: CoreEventDispatcher;
+  private readonly actionDispatcher: CoreActionDispatcher;
   private actionLoop: Promise<void> | undefined;
   private shutdownPromise: Promise<void> | undefined;
   private notificationServer: Server | undefined;
@@ -48,7 +56,17 @@ export class DiscordAdapter {
     private readonly client: Client,
     private readonly callbacks: DiscordAdapterCallbacks,
   ) {
-    this.eventDispatcher = new CoreEventDispatcher(core, EVENT_BUFFER_CAPACITY);
+    this.eventDispatcher = new CoreEventDispatcher(
+      core,
+      EVENT_BUFFER_CAPACITY,
+      (metrics) => this.callbacks.onEventDispatcherMetrics?.(metrics),
+    );
+    this.actionDispatcher = new CoreActionDispatcher(
+      (action) => this.executeAction(action),
+      (error) => this.fail(error),
+      ACTION_CONCURRENCY,
+      ACTION_DISPATCH_CAPACITY,
+    );
   }
 
   public static async create(
@@ -168,26 +186,33 @@ export class DiscordAdapter {
 
   private async consumeActions(): Promise<void> {
     while (!this.isStopping) {
+      if (!await this.actionDispatcher.waitForCapacity()) {
+        return;
+      }
       const action = await this.core.nextAction();
       if (!action || this.isStopping) {
         return;
       }
-
-      let outcome: ActionOutcome;
-      try {
-        outcome = await executeCoreAction(
-          this.client,
-          action.action,
-          this.config.outgoingMessagePrefix,
-        );
-      } catch (error) {
-        this.callbacks.onActionError(action.actionId, error);
-        outcome = createActionFailure(error);
-      }
-
-      if (this.isStopping) {
+      if (!this.actionDispatcher.dispatch(action)) {
         return;
       }
+    }
+  }
+
+  private async executeAction(action: CoreAction): Promise<void> {
+    let outcome: ActionOutcome;
+    try {
+      outcome = await executeCoreAction(
+        this.client,
+        action.action,
+        this.config.outgoingMessagePrefix,
+      );
+    } catch (error) {
+      this.callbacks.onActionError(action.actionId, error);
+      outcome = createActionFailure(error);
+    }
+
+    if (!this.isStopping) {
       await this.eventDispatcher.submit(createActionResultEvent(action, outcome));
     }
   }
@@ -217,6 +242,7 @@ export class DiscordAdapter {
     this.client.off(Events.MessageCreate, this.handleMessageCreate);
     this.client.off(Events.MessageReactionAdd, this.handleReactionAdd);
     this.client.destroy();
+    this.actionDispatcher.close();
     this.eventDispatcher.close();
 
     let shutdownError: unknown;
@@ -227,6 +253,7 @@ export class DiscordAdapter {
     }
     await serverClose;
     await this.actionLoop;
+    await this.actionDispatcher.waitForIdle();
 
     if (shutdownError !== undefined) {
       throw shutdownError;

@@ -24,6 +24,11 @@ async function main(): Promise<void> {
       console.error("Discord adapter failed.", error);
       process.exitCode = 1;
     },
+    onEventDispatcherMetrics(metrics) {
+      process.stdout.write(
+        `Event dispatcher metrics: outstanding=${metrics.outstanding} high_water=${metrics.highWaterMark} overflow_count=${metrics.overflowCount}\n`,
+      );
+    },
   });
 
   const requestShutdown = (signal: NodeJS.Signals): void => {

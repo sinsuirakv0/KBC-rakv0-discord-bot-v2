@@ -7,15 +7,26 @@ interface PendingEvent {
   reject: (reason: unknown) => void;
 }
 
+export interface EventDispatcherMetrics {
+  readonly outstanding: number;
+  readonly highWaterMark: number;
+  readonly overflowCount: number;
+}
+
+type MetricsHandler = (metrics: EventDispatcherMetrics) => void;
+
 export class CoreEventDispatcher {
   private readonly queue: PendingEvent[] = [];
   private outstandingCount = 0;
+  private highWaterMark = 0;
+  private overflowCount = 0;
   private isDraining = false;
   private isClosed = false;
 
   public constructor(
     private readonly core: NativeCore,
     private readonly capacity: number,
+    private readonly onMetrics?: MetricsHandler,
   ) {
     if (!Number.isInteger(capacity) || capacity < 1) {
       throw new RangeError("Event dispatcher capacity must be a positive integer.");
@@ -27,10 +38,16 @@ export class CoreEventDispatcher {
       return Promise.reject(new Error("Event dispatcher is closed."));
     }
     if (this.outstandingCount >= this.capacity) {
+      this.overflowCount += 1;
+      this.publishMetrics();
       return Promise.reject(new Error("Event dispatcher capacity exceeded."));
     }
 
     this.outstandingCount += 1;
+    if (this.outstandingCount > this.highWaterMark) {
+      this.highWaterMark = this.outstandingCount;
+      this.publishMetrics();
+    }
     return new Promise<void>((resolve, reject) => {
       this.queue.push({ event, resolve, reject });
       void this.drain();
@@ -47,6 +64,14 @@ export class CoreEventDispatcher {
       this.outstandingCount -= 1;
       pending.reject(reason);
     }
+  }
+
+  public metrics(): EventDispatcherMetrics {
+    return {
+      outstanding: this.outstandingCount,
+      highWaterMark: this.highWaterMark,
+      overflowCount: this.overflowCount,
+    };
   }
 
   private async drain(): Promise<void> {
@@ -76,5 +101,9 @@ export class CoreEventDispatcher {
     } finally {
       this.isDraining = false;
     }
+  }
+
+  private publishMetrics(): void {
+    this.onMetrics?.(this.metrics());
   }
 }
