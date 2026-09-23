@@ -1,6 +1,6 @@
 ﻿# Motion Rendering V2設計判断
 
-- 状態: 採用（2026-09-23にMP4入力をRGBA direct streamへ更新）
+- 状態: 採用（2026-09-23にRGBA direct streamと低CPU向けEncoder設定を確定）
 - 決定日: 2026-09-22
 - 対象: `ut` / `tut` Motion、Task Runtime、FFmpeg
 
@@ -145,6 +145,36 @@ RGBA directは中央値で約30.5%短かった。YUV経路は「25%以上短縮�
 
 FFmpegは初期段階では外部ProcessのままRustが所有する。libavcodecやx264を直接linkせず、Process分離、kill、配布の単純さを優先する。thread数は1から開始する。
 
+### 低CPU環境向けEncoder設定
+
+Northflank本番の代表実行では、345 frameの`encode_ms`が20,656 msとなり、全体21,110 msの約97.8%を占めた。従来の`encode_ms`にはFrame評価・描画、blocking worker待ち、FFmpeg stdinのbackpressure、Encoder終了待ちが含まれていたため、MP4経路に次の累積計測を追加した。
+
+- `encoder_total_ms`
+- `frame_worker_ms`
+- `frame_render_ms`
+- `spawn_overhead_ms`
+- `encoder_write_ms`
+- `encoder_finalize_ms`
+- `rendered_frames` / `reused_frames`
+- `input_rgba_bytes`
+- `queue_wait_ms`
+
+FFmpegの`-threads 1`は入力より前ではなく、libx264の出力Optionとして`-threads:v 1`を指定する。色変換Filterも`-filter_threads 1`に制限する。CPU 0.2相当のDocker制限下で710-fを3回ずつ比較した結果は次のとおりだった。
+
+| 710-f、345 frame、488x390 | encode中央値 | total中央値 | 出力bytes |
+| --- | ---: | ---: | ---: |
+| 変更前 | 22,091 ms | 22,516 ms | 1,401,701 |
+| 明示的1 thread | 16,897 ms | 17,283 ms | 1,405,036 |
+| FFmpeg auto thread | 24,505 ms | 24,871 ms | 1,401,701 |
+
+明示的1 threadは変更前よりencode中央値を約23.5%、auto threadより約31.1%短縮したため採用する。MP4は345 frame、488x390、30 fps、11.5秒、`yuv420p`を維持した。変更前出力との復号後SSIMは0.998678であり、利用者向けのFrame・時間・寸法・見た目の互換条件を満たす。Encoder thread数によるH.264 bitstreamと境界画素の完全一致は互換条件にしない。
+
+Frameごとの進捗文字列生成は16 frameごとに間引く。Task Runtime側のDiscord編集は従来どおり2秒間隔でcoalesceされるため、表示頻度は変えずHot loop内のAllocationだけを減らす。
+
+Frameごとの`spawn_blocking`除去も同条件で3回比較した。描画worker区間は短くなったが、encode中央値は16,897 msから17,396 msへ約3.0%悪化した。低CPU環境ではRust描画とFFmpegのSchedulingへ影響するため、現行のblocking workerを維持する。全Frameを保持するpipelineや追加Channelも導入しない。
+
+代表素材の再利用Frameは345 frame中2 frame（約0.58%）だった。CFRを崩すVFR化、DrawPacket全Frame cache、完成MP4 cacheはこの改善では導入しない。現在の支配区間は`encoder_write_ms`であり、低い再利用率に対してMemory、Invalidation、複雑性を増やす根拠がない。
+
 ## PNGとGIF
 
 - PNGは指定Frameだけを評価・描画し、Rustから直接encodeする。FFmpegを起動しない。
@@ -221,13 +251,14 @@ cleanup完了前に次Taskへslotを渡さない。
 
 ## 計測
 
-各時間は重複しない区間として記録する。
+Task全体の段階は重複しない区間として記録し、MP4 Encoder内部は総時間と内訳を併記する。
 
 - queue wait
 - asset load
 - parse/project
 - bounds pass
 - raster
+- blocking worker待ち
 - encoder write blocked
 - encoder finalize
 - attachment upload
@@ -235,6 +266,8 @@ cleanup完了前に次Taskへslotを渡さない。
 - peak RSS
 - rendered frame / reused frame
 - input bytes / output bytes
+
+`encoder_total_ms`はMP4 Encoder全体のwall timeであり、`frame_worker_ms`、`encoder_write_ms`、`encoder_finalize_ms`を内包する。`frame_worker_ms`は`frame_render_ms`を内包し、差分を`spawn_overhead_ms`として記録する。Frameごとのlogは出さず、完了時の累積値だけを出力する。
 
 比較hashは通常Benchmarkへ含めない。必要なCompatibility確認では計測本体と分離する。
 
@@ -269,6 +302,9 @@ cleanup完了前に次Taskへslotを渡さない。
 - YUV空間での直接alpha合成
 - 最初からSkia全体またはlibavcodecをlinkする構成
 - 重複FrameをVFR化してFrame数を変える最適化
+- 全FrameのDrawPacket cacheと完成Motion file cache（現在の支配区間・再利用率に対して根拠不足）
+- FFmpeg thread数のauto設定（CPU 0.2相当で明示的1 threadより遅い）
+- Frameごとの`spawn_blocking`除去（end-to-end中央値が改善しない）
 - Motion専用Queue、HTTP client、timeout、progress基盤
 
 ## 実装順序

@@ -1,6 +1,6 @@
 ﻿# Motion再設計 作業チェックポイント
 
-- 状態: Task Runtime・Motion再設計のproduction code実装済み、最小Runtime検証済み、性能・実環境確認を継続中
+- 状態: Task Runtime・Motion再設計・低CPU向けMP4高速化を実装済み、本環境反映待ち
 - 最終更新: 2026-09-23
 - 設計判断: `docs/decisions/MOTION_RENDERING_V2.md`
 
@@ -38,6 +38,12 @@
 - 本番DockerfileからLinux imageを構築し、Protocol v3 Native moduleと同梱FFmpeg 7.0.2の実行を確認した。Core直結Smokeでは710-fの同じ345 frameを4,009msで生成し、MP4全Frame decode、1,401,701 bytesのFile Action、Action結果後のworkspace cleanupまで確認した。
 - commit `2a8ff5d`をNorthflankへ段階投入し、Deployment status `success`、`/health/live` HTTP 200 (`alive`)、`/health` HTTP 200 (`ready`)を確認した。
 - 利用者が本環境Discordで代表Motionを複数回実行し、Command送信から返信まで概ね20秒と確認した。取得できた1回のlogは345 frame、asset 42ms、prepare 411ms、encode 20,656ms、total 21,110ms、出力1,405,049 bytesだった。encode区間がtotalの約97.8%を占め、Docker内encode 3,774msの約5.5倍である。旧計測86.69秒に対しては約4.1倍高速だが、RSSとqueue wait、encode区間内のRaster・pipe待ち・finalize内訳は未確認とする。
+- MP4完了logへqueue wait、Encoder全体、Frame worker、純描画、blocking worker差分、pipe write、finalize、描画・再利用Frame数、RGBA入力bytesを追加した。Frameごとのlogは増やさず、完了時の累積値だけを記録する。
+- FFmpegのthread指定を入力側の`-threads 1`からlibx264出力側の`-threads:v 1`へ修正し、`-filter_threads 1`を追加した。CPU 0.2相当のDocker制限下では、変更前のencode中央値22,091msから16,897msへ約23.5%短縮した。auto threadの中央値24,505msより約31.1%短いため、明示的1 threadを採用した。
+- Motionの進捗生成を16 frameごとへ間引いた。Discord編集は従来どおりTask Runtimeが2秒間隔でcoalesceするため、利用者向けの進捗頻度は維持する。
+- 代表素材の再利用Frameは2/345（約0.58%）だった。VFR、全Frame DrawPacket cache、完成MP4 cacheは費用に対する効果が不足するため導入しない。
+- per-frame `spawn_blocking`除去を同条件で比較したが、encode中央値が16,897msから17,396msへ約3.0%悪化したため採用しなかった。全Frame bufferや追加pipelineも導入しない。
+- 最適化後MP4を全Frame decodeし、345 frame、488x390、30fps、11.5秒、`yuv420p`を確認した。変更前出力との復号後SSIMは0.998678だった。
 
 ## 実装段階
 
@@ -102,14 +108,25 @@
 - [x] 本環境へ段階投入
 - [ ] 本環境の時間、RSS、Queue wait確認
 
+### M7 低CPU向けMP4高速化
+
+- [x] encode区間の内訳とqueue waitを完了logへ追加
+- [x] rendered / reused frameとRGBA入力bytesを計測
+- [x] libx264出力側へthread数を明示
+- [x] CPU 0.2相当で1 thread / autoを3回比較
+- [x] 進捗生成の間引き
+- [x] per-frame `spawn_blocking`除去を比較し不採用
+- [x] Frame数・寸法・duration・pixel format・見た目を確認
+- [ ] 一括で本環境へ反映し、詳細logを取得
+
 ## 再開位置
 
 次回はこの順序で再開する。
 
-1. Northflank logの`Motion generation completed`をあと2回分記録し、21,110ms前後で安定しているか確認する。
-2. Northflank metricsでMotion実行時のCPUとPeak RSSを確認し、queue待機の有無も確認する。
-3. encodeが支配的ならCPU割当とEncoder設定、prepareが支配的ならRasterizerを次の計測対象にする。
-4. 本番ログとDiscord出力が正常なら、旧Motion経路からの移行を完了とする。
+1. 最適化一式を1回だけpushし、NorthflankのDeployment成功とhealth checkを確認する。
+2. 本環境Discordで710-fの代表Motionを実行し、詳細な`Motion generation completed` logを取得する。
+3. `encoder_write_ms`、`frame_render_ms`、`spawn_overhead_ms`、`queue_wait_ms`をCPU制限Docker結果と比較する。
+4. 出力が正常で改善が再現すれば低CPU向け高速化を完了とする。改善しない場合も推測でCacheやVFRを追加せず、新しい内訳から次の対象を決める。
 
 再開時に最初に読むファイルは、`docs/decisions/MOTION_RENDERING_V2.md`、`docs/decisions/TASK_RUNTIME_V1.md`、このチェックポイント、`crates/kbc-core/src/task_runtime.rs`の順とする。
 

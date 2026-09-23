@@ -4,7 +4,7 @@ use std::fs::File;
 use std::io::BufWriter;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use png::{BitDepth, ColorType, Compression, Encoder, Filter};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -26,6 +26,31 @@ use super::request::MotionFormat;
 const FRAME_RATE: u32 = 30;
 const STDERR_LIMIT: usize = 8 * 1024;
 const PALETTE_SAMPLE_COUNT: usize = 16;
+const PROGRESS_FRAME_INTERVAL: usize = 16;
+
+#[derive(Default)]
+struct EncodeMetrics {
+    encoder_total: Duration,
+    frame_worker: Duration,
+    frame_render: Duration,
+    encoder_write: Duration,
+    encoder_finalize: Duration,
+    rendered_frames: usize,
+    reused_frames: usize,
+    input_rgba_bytes: u64,
+}
+
+struct EncodedMotion {
+    prepared: PreparedMotion,
+    metrics: EncodeMetrics,
+}
+
+struct RenderedFrame {
+    prepared: PreparedMotion,
+    reused: bool,
+    worker_elapsed: Duration,
+    render_elapsed: Duration,
+}
 
 pub(crate) struct MotionJob {
     plan: MotionPlan,
@@ -81,6 +106,7 @@ impl MotionJob {
             .output_path(&format!("motion.{extension}"))
             .map_err(|error| MotionError::render(error.to_string()))?;
         let encode_started = Instant::now();
+        let mut encode_metrics = None;
         match self.plan.format {
             MotionFormat::Png => {
                 let output_for_worker = output.clone();
@@ -95,7 +121,9 @@ impl MotionJob {
             }
             MotionFormat::Mp4 => {
                 let ffmpeg = required_ffmpeg(self.ffmpeg_path.as_deref())?;
-                prepared = render_mp4(prepared, &ffmpeg, &output, &context).await?;
+                let encoded = render_mp4(prepared, &ffmpeg, &output, &context).await?;
+                prepared = encoded.prepared;
+                encode_metrics = Some(encoded.metrics);
             }
             MotionFormat::Gif => {
                 let ffmpeg = required_ffmpeg(self.ffmpeg_path.as_deref())?;
@@ -111,16 +139,43 @@ impl MotionJob {
             .await
             .map_err(|error| MotionError::render(format!("output metadata failed: {error}")))?
             .len();
-        eprintln!(
-            "Motion generation completed: format={} frames={frame_count} dimensions={}x{} asset_ms={} prepare_ms={} encode_ms={} total_ms={} output_bytes={output_bytes}",
-            extension,
-            dimensions.0,
-            dimensions.1,
-            asset_elapsed.as_millis(),
-            prepare_elapsed.as_millis(),
-            encode_elapsed.as_millis(),
-            total_started.elapsed().as_millis(),
-        );
+        if let Some(encode_metrics) = encode_metrics {
+            eprintln!(
+                "Motion generation completed: format={} frames={frame_count} dimensions={}x{} queue_wait_ms={} asset_ms={} prepare_ms={} encode_ms={} encoder_total_ms={} frame_worker_ms={} frame_render_ms={} spawn_overhead_ms={} encoder_write_ms={} encoder_finalize_ms={} rendered_frames={} reused_frames={} input_rgba_bytes={} total_ms={} output_bytes={output_bytes}",
+                extension,
+                dimensions.0,
+                dimensions.1,
+                context.queue_wait().as_millis(),
+                asset_elapsed.as_millis(),
+                prepare_elapsed.as_millis(),
+                encode_elapsed.as_millis(),
+                encode_metrics.encoder_total.as_millis(),
+                encode_metrics.frame_worker.as_millis(),
+                encode_metrics.frame_render.as_millis(),
+                encode_metrics
+                    .frame_worker
+                    .saturating_sub(encode_metrics.frame_render)
+                    .as_millis(),
+                encode_metrics.encoder_write.as_millis(),
+                encode_metrics.encoder_finalize.as_millis(),
+                encode_metrics.rendered_frames,
+                encode_metrics.reused_frames,
+                encode_metrics.input_rgba_bytes,
+                total_started.elapsed().as_millis(),
+            );
+        } else {
+            eprintln!(
+                "Motion generation completed: format={} frames={frame_count} dimensions={}x{} queue_wait_ms={} asset_ms={} prepare_ms={} encode_ms={} total_ms={} output_bytes={output_bytes}",
+                extension,
+                dimensions.0,
+                dimensions.1,
+                context.queue_wait().as_millis(),
+                asset_elapsed.as_millis(),
+                prepare_elapsed.as_millis(),
+                encode_elapsed.as_millis(),
+                total_started.elapsed().as_millis(),
+            );
+        }
         Ok(TaskArtifact::new(
             output,
             format!("{}.{}", self.plan.filename_stem, extension),
@@ -159,7 +214,9 @@ impl PreparedMotion {
             if context.cancellation().is_cancelled() {
                 return Err(MotionError::render("motion measurement was cancelled"));
             }
-            context.report(format!("⏳ 表示範囲を計測しています ({completed}/{total})"));
+            if should_report_progress(completed, total) {
+                context.report(format!("⏳ 表示範囲を計測しています ({completed}/{total})"));
+            }
             Ok(())
         })?;
         let rasterizer = Rasterizer::new(sprite, layout)?;
@@ -220,14 +277,14 @@ async fn render_mp4(
     ffmpeg: &Path,
     output: &Path,
     context: &TaskContext,
-) -> Result<PreparedMotion, MotionError> {
+) -> Result<EncodedMotion, MotionError> {
     let (width, height) = prepared.dimensions();
     let arguments = vec![
         "-y".to_owned(),
         "-hide_banner".to_owned(),
         "-loglevel".to_owned(),
         "error".to_owned(),
-        "-threads".to_owned(),
+        "-filter_threads".to_owned(),
         "1".to_owned(),
         "-f".to_owned(),
         "rawvideo".to_owned(),
@@ -241,6 +298,8 @@ async fn render_mp4(
         "pipe:0".to_owned(),
         "-c:v".to_owned(),
         "libx264".to_owned(),
+        "-threads:v".to_owned(),
+        "1".to_owned(),
         "-preset".to_owned(),
         "ultrafast".to_owned(),
         "-crf".to_owned(),
@@ -252,29 +311,49 @@ async fn render_mp4(
         "-an".to_owned(),
         output.to_string_lossy().into_owned(),
     ];
+    let encoder_started = Instant::now();
     let (mut child, mut stdin, stderr) = start_encoder(ffmpeg, &arguments)?;
+    let mut metrics = EncodeMetrics::default();
     let total = prepared.frames.len();
     for index in 0..total {
         if context.cancellation().is_cancelled() {
             stop_encoder(&mut child).await;
             return Err(MotionError::render("MP4 rendering was cancelled"));
         }
-        prepared = match render_frame(prepared, index, context).await {
-            Ok(prepared) => prepared,
+        let rendered = match render_frame(prepared, index, context).await {
+            Ok(rendered) => rendered,
             Err(error) => {
                 stop_encoder(&mut child).await;
                 return Err(error);
             }
         };
-        context.report(format!("⏳ MP4を描画しています ({}/{total})", index + 1));
+        prepared = rendered.prepared;
+        metrics.frame_worker += rendered.worker_elapsed;
+        metrics.frame_render += rendered.render_elapsed;
+        if rendered.reused {
+            metrics.reused_frames += 1;
+        } else {
+            metrics.rendered_frames += 1;
+        }
+        if should_report_progress(index + 1, total) {
+            context.report(format!("⏳ MP4を描画しています ({}/{total})", index + 1));
+        }
+        let write_started = Instant::now();
         if let Err(error) = write_rgba(&mut stdin, prepared.rgba(), context).await {
             stop_encoder(&mut child).await;
             return Err(error);
         }
+        metrics.encoder_write += write_started.elapsed();
+        metrics.input_rgba_bytes = metrics
+            .input_rgba_bytes
+            .saturating_add(prepared.rgba().len() as u64);
     }
     drop(stdin);
+    let finalize_started = Instant::now();
     finish_encoder(child, stderr).await?;
-    Ok(prepared)
+    metrics.encoder_finalize = finalize_started.elapsed();
+    metrics.encoder_total = encoder_started.elapsed();
+    Ok(EncodedMotion { prepared, metrics })
 }
 
 async fn render_gif(
@@ -290,7 +369,7 @@ async fn render_gif(
         "-hide_banner".to_owned(),
         "-loglevel".to_owned(),
         "error".to_owned(),
-        "-threads".to_owned(),
+        "-filter_threads".to_owned(),
         "1".to_owned(),
         "-f".to_owned(),
         "rawvideo".to_owned(),
@@ -304,6 +383,8 @@ async fn render_gif(
         "pipe:0".to_owned(),
         "-vf".to_owned(),
         "palettegen=reserve_transparent=1".to_owned(),
+        "-threads:v".to_owned(),
+        "1".to_owned(),
         "-frames:v".to_owned(),
         "1".to_owned(),
         palette.to_string_lossy().into_owned(),
@@ -311,7 +392,7 @@ async fn render_gif(
     let (palette_child, mut palette_stdin, palette_stderr) =
         start_encoder(ffmpeg, &palette_arguments)?;
     for index in sample_indices(prepared.frames.len()) {
-        prepared = render_frame(prepared, index, context).await?;
+        prepared = render_frame(prepared, index, context).await?.prepared;
         write_rgba(&mut palette_stdin, prepared.rgba(), context).await?;
     }
     drop(palette_stdin);
@@ -323,7 +404,9 @@ async fn render_gif(
         "-hide_banner".to_owned(),
         "-loglevel".to_owned(),
         "error".to_owned(),
-        "-threads".to_owned(),
+        "-filter_threads".to_owned(),
+        "1".to_owned(),
+        "-filter_complex_threads".to_owned(),
         "1".to_owned(),
         "-f".to_owned(),
         "rawvideo".to_owned(),
@@ -339,6 +422,8 @@ async fn render_gif(
         palette.to_string_lossy().into_owned(),
         "-filter_complex".to_owned(),
         "[0:v][1:v]paletteuse=dither=bayer:bayer_scale=3:diff_mode=rectangle".to_owned(),
+        "-threads:v".to_owned(),
+        "1".to_owned(),
         "-loop".to_owned(),
         "0".to_owned(),
         output.to_string_lossy().into_owned(),
@@ -347,13 +432,15 @@ async fn render_gif(
     let total = prepared.frames.len();
     for index in 0..total {
         prepared = match render_frame(prepared, index, context).await {
-            Ok(prepared) => prepared,
+            Ok(rendered) => rendered.prepared,
             Err(error) => {
                 stop_encoder(&mut child).await;
                 return Err(error);
             }
         };
-        context.report(format!("⏳ GIFを描画しています ({}/{total})", index + 1));
+        if should_report_progress(index + 1, total) {
+            context.report(format!("⏳ GIFを描画しています ({}/{total})", index + 1));
+        }
         if let Err(error) = write_rgba(&mut stdin, prepared.rgba(), context).await {
             stop_encoder(&mut child).await;
             return Err(error);
@@ -368,17 +455,28 @@ async fn render_frame(
     mut prepared: PreparedMotion,
     index: usize,
     context: &TaskContext,
-) -> Result<PreparedMotion, MotionError> {
+) -> Result<RenderedFrame, MotionError> {
     if context.cancellation().is_cancelled() {
         return Err(MotionError::render("motion rendering was cancelled"));
     }
-    prepared = spawn_blocking(move || {
-        prepared.render_rgba_frame(index)?;
-        Ok::<_, MotionError>(prepared)
+    let worker_started = Instant::now();
+    let (prepared, reused, render_elapsed) = spawn_blocking(move || {
+        let render_started = Instant::now();
+        let reused = prepared.render_rgba_frame(index)?;
+        Ok::<_, MotionError>((prepared, reused, render_started.elapsed()))
     })
     .await
     .map_err(|error| MotionError::render(format!("frame worker failed: {error}")))??;
-    Ok(prepared)
+    Ok(RenderedFrame {
+        prepared,
+        reused,
+        worker_elapsed: worker_started.elapsed(),
+        render_elapsed,
+    })
+}
+
+fn should_report_progress(completed: usize, total: usize) -> bool {
+    completed == 1 || completed == total || completed.is_multiple_of(PROGRESS_FRAME_INTERVAL)
 }
 
 async fn write_rgba(

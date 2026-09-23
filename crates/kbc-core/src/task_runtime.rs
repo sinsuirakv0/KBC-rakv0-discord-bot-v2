@@ -85,6 +85,7 @@ pub(crate) struct TaskContext {
     workspace: Arc<PathBuf>,
     progress_sender: watch::Sender<String>,
     cancellation: CancellationToken,
+    queue_wait: Duration,
 }
 
 impl TaskContext {
@@ -108,6 +109,10 @@ impl TaskContext {
 
     pub(crate) fn cancellation(&self) -> &CancellationToken {
         &self.cancellation
+    }
+
+    pub(crate) fn queue_wait(&self) -> Duration {
+        self.queue_wait
     }
 }
 
@@ -286,6 +291,7 @@ async fn run_task(task: QueuedTask, shared: Arc<TaskShared>) {
         return;
     };
 
+    let queue_started = Instant::now();
     let active = match timeout(QUEUE_TIMEOUT, Arc::clone(&shared.active).acquire_owned()).await {
         Ok(Ok(active)) => active,
         Ok(Err(_)) => return,
@@ -302,6 +308,7 @@ async fn run_task(task: QueuedTask, shared: Arc<TaskShared>) {
             return;
         }
     };
+    let queue_wait = queue_started.elapsed();
 
     let workspace = task_workspace(id);
     if let Err(error) = tokio::fs::create_dir_all(&workspace).await {
@@ -325,6 +332,7 @@ async fn run_task(task: QueuedTask, shared: Arc<TaskShared>) {
         workspace: Arc::new(workspace.clone()),
         progress_sender,
         cancellation: cancellation.clone(),
+        queue_wait,
     };
     let result = supervise_job(
         job.run(context),
