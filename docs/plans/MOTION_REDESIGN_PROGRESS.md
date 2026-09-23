@@ -37,6 +37,7 @@
 - Release Local Discordで710-fのmove・idle・attack・knockback計345 frameをMP4送信し、asset 110ms、prepare 165ms、encode 1,859ms、total 2,135ms、出力1,401,702 bytesを確認した。
 - 本番DockerfileからLinux imageを構築し、Protocol v3 Native moduleと同梱FFmpeg 7.0.2の実行を確認した。Core直結Smokeでは710-fの同じ345 frameを4,009msで生成し、MP4全Frame decode、1,401,701 bytesのFile Action、Action結果後のworkspace cleanupまで確認した。
 - commit `2a8ff5d`をNorthflankへ段階投入し、Deployment status `success`、`/health/live` HTTP 200 (`alive`)、`/health` HTTP 200 (`ready`)を確認した。
+- 利用者が本環境Discordで代表Motionを複数回実行し、Command送信から返信まで概ね20秒と確認した。取得できた1回のlogは345 frame、asset 42ms、prepare 411ms、encode 20,656ms、total 21,110ms、出力1,405,049 bytesだった。encode区間がtotalの約97.8%を占め、Docker内encode 3,774msの約5.5倍である。旧計測86.69秒に対しては約4.1倍高速だが、RSSとqueue wait、encode区間内のRaster・pipe待ち・finalize内訳は未確認とする。
 
 ## 実装段階
 
@@ -105,9 +106,10 @@
 
 次回はこの順序で再開する。
 
-1. 本環境Discordで代表Motionを1回生成し、生成時間、RSS、queue waitを記録する。
-2. 本番ログとDiscord出力が正常なら、旧Motion経路からの移行を完了とする。
-3. 実測でボトルネックが見つかった場合だけ、次の計測対象を決める。
+1. Northflank logの`Motion generation completed`をあと2回分記録し、21,110ms前後で安定しているか確認する。
+2. Northflank metricsでMotion実行時のCPUとPeak RSSを確認し、queue待機の有無も確認する。
+3. encodeが支配的ならCPU割当とEncoder設定、prepareが支配的ならRasterizerを次の計測対象にする。
+4. 本番ログとDiscord出力が正常なら、旧Motion経路からの移行を完了とする。
 
 再開時に最初に読むファイルは、`docs/decisions/MOTION_RENDERING_V2.md`、`docs/decisions/TASK_RUNTIME_V1.md`、このチェックポイント、`crates/kbc-core/src/task_runtime.rs`の順とする。
 
