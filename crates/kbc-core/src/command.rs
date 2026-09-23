@@ -87,6 +87,7 @@ pub(crate) struct CommandContext {
     guild_id: Option<String>,
     channel_id: String,
     user_id: String,
+    member_role_ids: Vec<String>,
     request_id: RequestId,
 }
 
@@ -95,12 +96,14 @@ impl CommandContext {
         guild_id: Option<String>,
         channel_id: String,
         user_id: String,
+        member_role_ids: Vec<String>,
         request_id: RequestId,
     ) -> Self {
         Self {
             guild_id,
             channel_id,
             user_id,
+            member_role_ids,
             request_id,
         }
     }
@@ -119,6 +122,10 @@ impl CommandContext {
 
     pub(crate) fn user_id(&self) -> &str {
         &self.user_id
+    }
+
+    pub(crate) fn member_role_ids(&self) -> &[String] {
+        &self.member_role_ids
     }
 
     pub(crate) fn request_id(&self) -> &RequestId {

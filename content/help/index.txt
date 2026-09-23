@@ -13,5 +13,6 @@ o.gatya  gatyaスケジュールと詳細
 o.item   itemスケジュールと詳細
 o.eventdata 公式イベントデータのURL・ファイル取得
 o.push   通知関係
+o.maint  Botメンテナー設定
 
 詳しい使い方は o.<command> help で表示できます。```

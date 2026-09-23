@@ -7,6 +7,7 @@ mod commands;
 mod content;
 mod motion;
 mod notification;
+mod permissions;
 mod runtime;
 mod services;
 mod session;

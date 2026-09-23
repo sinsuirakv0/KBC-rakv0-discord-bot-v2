@@ -91,7 +91,7 @@ messageCreate CoreEvent
 
 複数Actionの先頭IDは従来どおり`action:<eventId>`、2件目以降は`action:<eventId>:<連番>`とする。Action Queueが満杯なら各Actionの投入時に待機するため、複数返信でもbackpressureを維持する。
 
-現在登録されているCommandは、静的な`asset`、`home`、`ping`、`skb`、`skdsite`、`help`、外部データを使う`item`、`sale`、`gatya`、`eventdata`、非Motionの`ut`、`tut`、`st`、更新表示の`skd`、通知設定の`push`である。返信とHelpはContent Catalogから起動時に読み、各Commandへ必要な文字列だけを所有させる。Prefix外、未知Command、Guild限定CommandのDM入力ではActionを生成しない。`messageCreate`はCommand Runtimeへ、`reactionAdd`と通常Commandの`actionResult`はSession Managerへ振り分け、通知Actionの結果はNotification Serviceへ返す。
+現在登録されているCommandは、静的な`asset`、`home`、`ping`、`skb`、`skdsite`、`help`、外部データを使う`item`、`sale`、`gatya`、`eventdata`、非Motionの`ut`、`tut`、`st`、更新表示の`skd`、通知設定の`push`、全サーバー共通メンテナー設定の`maint`である。返信とHelpはContent Catalogから起動時に読み、各Commandへ必要な文字列だけを所有させる。Prefix外、未知Command、Guild限定CommandのDM入力ではActionを生成しない。`messageCreate`はCommand Runtimeへ、`reactionAdd`と通常Commandの`actionResult`はSession Managerへ振り分け、Task Runtime経由のDiscord照会結果と通知Actionの結果はそれぞれの待機元へ返す。
 
 ## 6. Session経路
 

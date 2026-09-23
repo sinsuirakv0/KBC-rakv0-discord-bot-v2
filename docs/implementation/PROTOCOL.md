@@ -19,6 +19,7 @@ npm run generate:protocol
 - `validate_protocol_version(actual)`: `PROTOCOL_VERSION`との一致を確認する共通関数
 - `CoreEvent::validate_version()`: EventのVersionを共通関数へ渡す
 - `CoreAction::validate_version()`: ActionのVersionを共通関数へ渡す
+- `resolveGuildMembers` / `membersResolved`: Core内のメンテナー設定を、Discord Adapterで現在のGuild memberへ有限件解決する
 
 ### N-API Bridge
 

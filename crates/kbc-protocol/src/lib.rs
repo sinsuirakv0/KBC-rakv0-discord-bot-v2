@@ -6,7 +6,7 @@ use std::fmt::{Display, Formatter};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-pub const PROTOCOL_VERSION: u32 = 3;
+pub const PROTOCOL_VERSION: u32 = 4;
 
 macro_rules! protocol_id {
     ($name:ident) => {
@@ -79,8 +79,24 @@ pub enum CoreEventData {
     rename_all_fields = "camelCase"
 )]
 pub enum ActionOutcome {
-    Success { message_id: Option<String> },
-    Failure { code: String, retryable: bool },
+    Success {
+        message_id: Option<String>,
+    },
+    MembersResolved {
+        members: Vec<ResolvedGuildMember>,
+        truncated: bool,
+    },
+    Failure {
+        code: String,
+        retryable: bool,
+    },
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ResolvedGuildMember {
+    pub user_id: String,
+    pub display_name: String,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize, TS)]
@@ -142,6 +158,11 @@ pub enum CoreActionData {
     ClearReactions {
         channel_id: String,
         message_id: String,
+    },
+    ResolveGuildMembers {
+        guild_id: String,
+        subject_ids: Vec<String>,
+        max_members: u16,
     },
 }
 

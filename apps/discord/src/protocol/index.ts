@@ -6,5 +6,6 @@ export type { CoreEvent } from "./generated/CoreEvent";
 export type { CoreEventData } from "./generated/CoreEventData";
 export type { EventId } from "./generated/EventId";
 export type { RequestId } from "./generated/RequestId";
+export type { ResolvedGuildMember } from "./generated/ResolvedGuildMember";
 export type { RuntimeInfo } from "./generated/RuntimeInfo";
 export { PROTOCOL_VERSION } from "./generated/version";

@@ -35,7 +35,7 @@ event
 
 `messageCreate`と`reactionAdd`には、Discord Objectではなく必要なSnowflakeとplain dataだけを入れる。Discord Snowflakeは精度を失わないよう、すべてStringで保持する。
 
-`actionResult`はTypeScriptがDiscord操作を終えた結果をCoreへ返すEventである。成功時は必要に応じて`messageId`を返し、失敗時は安定したcodeとretry可否だけを返す。内部例外やStack TraceはProtocolへ載せない。
+`actionResult`はTypeScriptがDiscord操作を終えた結果をCoreへ返すEventである。通常成功時は必要に応じて`messageId`を返し、Guild member解決時は有限な`membersResolved`を返す。失敗時は安定したcodeとretry可否だけを返す。内部例外やStack TraceはProtocolへ載せない。
 
 Button等は必要になるPhaseまで追加しない。ShutdownはEventではなくLifecycle APIとして扱う。
 
@@ -50,18 +50,22 @@ requestId
 action
 ```
 
-Version 2のVariantは次の6つとする。
+現行Version 4のAction Variantは次の8つとする。
 
 - `sendMessage`
 - `sendNotification`
 - `editMessage`
 - `sendAttachment`
+- `sendAttachmentFile`
 - `addReaction`
 - `clearReactions`
+- `resolveGuildMembers`
 
 AttachmentのdataはProtocol上`Uint8Array`とし、N-APIの実運用経路ではNode.js `Buffer`として扱う。base64文字列へ変換しない。
 
 `sendNotification`は`sendMessage`にDiscord nonceを加えた通知専用Actionである。Adapterは`enforceNonce: true`で実行し、同じ通知の応答消失時にDiscord側でも重複を抑止する。通常Commandは従来どおり`sendMessage`を使う。
+
+`resolveGuildMembers`は、Coreが渡した最大64件のユーザー・ロールIDと現在のGuild memberをDiscord Adapterで照合する。結果件数はCore指定かつ最大25件とし、全件をProtocolへ流さない。Bot内の権限判断、設定保存、一覧本文の構築はCoreが担当する。
 
 ## 4. ID
 
@@ -95,7 +99,7 @@ Wire fieldはcamelCase、Variant識別子は`type`とする。生成されたTyp
 
 ## 6. Version互換性
 
-現在の`PROTOCOL_VERSION`は`2`である。通知専用の未知ActionをVersion 1 Adapterが処理できないため、`sendNotification`追加時にVersionを上げた。
+現在の`PROTOCOL_VERSION`は`4`である。Version 4では未知Actionとなる`resolveGuildMembers`と、その結果`membersResolved`を追加したためVersionを上げた。
 
 AdapterはNative module読込時に`getRuntimeInfo()`を呼び、Rust CoreとAdapterのVersionが一致しなければ起動を失敗させる。
 

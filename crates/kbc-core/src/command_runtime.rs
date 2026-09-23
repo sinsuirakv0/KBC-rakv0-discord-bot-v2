@@ -1,4 +1,4 @@
-//! CoreEventをCommandへdispatchし、CoreActionへ変換する。
+﻿//! CoreEventをCommandへdispatchし、CoreActionへ変換する。
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -54,6 +54,7 @@ impl CommandRuntime {
             guild_id,
             channel_id,
             user_id,
+            member_role_ids,
             content,
             ..
         } = event
@@ -66,8 +67,13 @@ impl CommandRuntime {
             return None;
         }
 
-        let context =
-            CommandContext::new(guild_id, channel_id.clone(), user_id, request_id.clone());
+        let context = CommandContext::new(
+            guild_id,
+            channel_id.clone(),
+            user_id,
+            member_role_ids,
+            request_id.clone(),
+        );
         let output = match command.execute(context, input.arguments).await {
             Ok(output) => output,
             Err(error) => {

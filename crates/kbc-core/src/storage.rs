@@ -18,8 +18,10 @@ use crate::notification::EventRecord;
 use crate::services::HttpService;
 
 const MANIFEST_PATH: &str = "meta.json";
+const MAINTAINERS_PATH: &str = "config/maintainers.json";
 const MAX_DOCUMENT_BYTES: usize = 256 * 1024;
 const MAX_DIRECTORY_FILES: usize = 999;
+pub(crate) const MAX_MAINTAINER_SUBJECTS: usize = 64;
 const WRITE_INTERVAL: Duration = Duration::from_secs(1);
 const WRITE_ATTEMPTS: usize = 2;
 
@@ -78,6 +80,13 @@ struct GuildSettings {
     subscriptions: Vec<Subscription>,
 }
 
+#[derive(Clone, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MaintainerSettings {
+    schema_version: u8,
+    subject_ids: Vec<String>,
+}
+
 struct RepositoryFile {
     content: String,
     sha: String,
@@ -87,6 +96,7 @@ struct RepositoryFile {
 struct StorageState {
     initialized: bool,
     settings: HashMap<String, GuildSettings>,
+    maintainers: MaintainerSettings,
     last_write_at: Option<Instant>,
     cooldown_until: Option<Instant>,
 }
@@ -179,6 +189,85 @@ impl StorageService {
             .collect())
     }
 
+    pub(crate) async fn set_maintainer(
+        &self,
+        subject_id: &str,
+        enabled: bool,
+    ) -> Result<bool, StorageError> {
+        if !valid_maintainer_subject_id(subject_id) {
+            return Err(StorageError::new("invalid-maintainer-subject"));
+        }
+        let mut state = self.state.lock().await;
+        self.ensure_initialized(&mut state).await?;
+        for attempt in 0..WRITE_ATTEMPTS {
+            let file = self.read_file(&mut state, MAINTAINERS_PATH).await?;
+            let mut settings = match &file {
+                Some(file) => parse_maintainers(&file.content)?,
+                None => MaintainerSettings {
+                    schema_version: 1,
+                    subject_ids: Vec::new(),
+                },
+            };
+            let exists = settings
+                .subject_ids
+                .iter()
+                .any(|current| current == subject_id);
+            if enabled == exists {
+                state.maintainers = settings;
+                return Ok(false);
+            }
+            if enabled {
+                if settings.subject_ids.len() >= MAX_MAINTAINER_SUBJECTS {
+                    return Err(StorageError::new("maintainer-limit-reached"));
+                }
+                settings.subject_ids.push(subject_id.to_owned());
+                settings.subject_ids.sort_unstable();
+            } else {
+                settings.subject_ids.retain(|current| current != subject_id);
+            }
+            validate_maintainers(&settings)?;
+            let content = serde_json::to_string(&settings)
+                .map_err(|error| StorageError::detail("json-encode", error))?;
+            match self
+                .write_file(
+                    &mut state,
+                    MAINTAINERS_PATH,
+                    &content,
+                    file.as_ref().map(|current| current.sha.as_str()),
+                )
+                .await
+            {
+                Ok(()) => {
+                    state.maintainers = settings;
+                    return Ok(true);
+                }
+                Err(error) if error.code() == "conflict" && attempt + 1 < WRITE_ATTEMPTS => {
+                    eprintln!("Storage write conflicted; reloading the latest maintainer settings");
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        Err(StorageError::new("conflict"))
+    }
+
+    pub(crate) async fn maintainer_subject_ids(&self) -> Result<Vec<String>, StorageError> {
+        let mut state = self.state.lock().await;
+        self.ensure_initialized(&mut state).await?;
+        Ok(state.maintainers.subject_ids.clone())
+    }
+
+    pub(crate) async fn is_maintainer(
+        &self,
+        user_id: &str,
+        member_role_ids: &[String],
+    ) -> Result<bool, StorageError> {
+        let subjects = self.maintainer_subject_ids().await?;
+        Ok(subjects.iter().any(|subject| subject == user_id)
+            || member_role_ids
+                .iter()
+                .any(|role_id| subjects.iter().any(|subject| subject == role_id)))
+    }
+
     pub(crate) async fn initialize(&self) -> Result<(), StorageError> {
         let mut state = self.state.lock().await;
         self.ensure_initialized(&mut state).await
@@ -257,7 +346,15 @@ impl StorageService {
             }
             settings.insert(value.guild_id.clone(), value);
         }
+        let maintainers = match self.read_file(state, MAINTAINERS_PATH).await? {
+            Some(file) => parse_maintainers(&file.content)?,
+            None => MaintainerSettings {
+                schema_version: 1,
+                subject_ids: Vec::new(),
+            },
+        };
         state.settings = settings;
+        state.maintainers = maintainers;
         state.initialized = true;
         Ok(())
     }
@@ -519,6 +616,30 @@ fn parse_settings(content: &str) -> Result<GuildSettings, StorageError> {
     Ok(settings)
 }
 
+fn parse_maintainers(content: &str) -> Result<MaintainerSettings, StorageError> {
+    let settings: MaintainerSettings = serde_json::from_str(content.trim_start_matches('\u{feff}'))
+        .map_err(|error| StorageError::detail("invalid-maintainer-settings", error))?;
+    validate_maintainers(&settings)?;
+    Ok(settings)
+}
+
+fn validate_maintainers(settings: &MaintainerSettings) -> Result<(), StorageError> {
+    if settings.schema_version != 1
+        || settings.subject_ids.len() > MAX_MAINTAINER_SUBJECTS
+        || settings
+            .subject_ids
+            .iter()
+            .any(|subject| !valid_maintainer_subject_id(subject))
+    {
+        return Err(StorageError::new("invalid-maintainer-settings"));
+    }
+    let unique = settings.subject_ids.iter().collect::<HashSet<_>>();
+    if unique.len() != settings.subject_ids.len() {
+        return Err(StorageError::new("duplicate-maintainer-subject"));
+    }
+    Ok(())
+}
+
 fn validate_settings(settings: &GuildSettings) -> Result<(), StorageError> {
     if settings.schema_version != 1
         || !valid_snowflake(&settings.guild_id)
@@ -576,6 +697,12 @@ fn hex_encode(bytes: &[u8]) -> String {
 
 fn valid_snowflake(value: &str) -> bool {
     !value.is_empty() && value.chars().all(|character| character.is_ascii_digit())
+}
+
+fn valid_maintainer_subject_id(value: &str) -> bool {
+    (17..=20).contains(&value.len())
+        && value.chars().all(|character| character.is_ascii_digit())
+        && value.parse::<u64>().is_ok_and(|number| number > 0)
 }
 
 fn validate_path(path: &str) -> Result<(), StorageError> {

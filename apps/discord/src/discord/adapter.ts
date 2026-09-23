@@ -69,6 +69,7 @@ export class DiscordAdapter {
     const client = new Client({
       intents: [
         GatewayIntentBits.Guilds,
+        GatewayIntentBits.GuildMembers,
         GatewayIntentBits.GuildMessages,
         GatewayIntentBits.MessageContent,
         GatewayIntentBits.GuildMessageReactions,
@@ -174,12 +175,11 @@ export class DiscordAdapter {
 
       let outcome: ActionOutcome;
       try {
-        const messageId = await executeCoreAction(
+        outcome = await executeCoreAction(
           this.client,
           action.action,
           this.config.outgoingMessagePrefix,
         );
-        outcome = { status: "success", messageId };
       } catch (error) {
         this.callbacks.onActionError(action.actionId, error);
         outcome = createActionFailure(error);

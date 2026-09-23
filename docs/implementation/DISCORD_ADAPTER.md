@@ -27,7 +27,8 @@ Phase 4では、Discord Gateway EventをCoreEventへ変換し、CoreActionをDis
 
 ### Action実行
 
-- `executeCoreAction(client, action, outgoingMessagePrefix)`: 5つのActionをdiscord.js操作へ変換し、送信系だけMessage IDを返す。送信・編集本文へ環境別prefixを付ける
+- `executeCoreAction(client, action, outgoingMessagePrefix)`: Protocol Actionをdiscord.js操作へ変換し、`success`、`membersResolved`のいずれかを返す。送信・編集本文へ環境別prefixを付ける
+- `resolveGuildMembers`: 最大64件の登録IDと最大5,000人のGuild memberを照合し、名前順で最大25人を返す。完全なRole所属者取得にはServer Members Intentを使用する
 - `createAttachmentMessage(prefix, message)`: 本文なしのLocal Attachmentにも`[local]`識別子を付ける
 - `getSendableChannel(client, channelId)`: fetchしたChannelがtext basedかつsend可能であることを確認する
 - `getMessage(client, channelId, messageId)`: edit以外のMessage対象操作に使うMessageを取得する
@@ -55,6 +56,7 @@ Docker runtimeは`NODE_ENV=production`を設定する。Localの既定値は`[lo
 CoreAction
 → executeCoreAction
 ├─ success(messageId?)
+├─ membersResolved(members, truncated)
 └─ failure(code, retryable)
 → createActionResultEvent
 → CoreEventDispatcher

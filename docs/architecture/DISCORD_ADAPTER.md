@@ -28,7 +28,7 @@ Bot自身を含むBot userのEventは除外する。Discord SnowflakeはString�
 
 Unicode Reactionは`discord.js`の`identifier`ではURL encodeされるため、Protocolへは生のemoji `name`を渡す。Custom emojiはGuild内で一意に判定できる`identifier`を維持する。Adapterは選択状態を持たず、この表現変換だけを担当する。
 
-Clientは現行Botと同じGuild、Guild Message、Message Content、Guild ReactionのIntentを使う。cacheにないMessageへのReactionもIDとして受け取れるよう、Message、Channel、Reactionのpartialを有効にする。DM用IntentはPhase 4では追加しない。
+ClientはGuild、Guild Members、Guild Message、Message Content、Guild ReactionのIntentを使う。Guild Membersは`o.maint maintainer list`でロール所属者を漏れなく解決するために必要であり、Developer Portal側でもServer Members Intentを有効にする。cacheにないMessageへのReactionもIDとして受け取れるよう、Message、Channel、Reactionのpartialを有効にする。DM用Intentは追加しない。
 
 Gateway Eventごとに新しい`eventId`と`requestId`を生成する。Action実行結果では、対象Actionの`requestId`を維持して一連の処理を追跡可能にする。
 
@@ -53,8 +53,10 @@ Actionは1件ずつ順番に実行する。
 | `sendNotification` | nonceを強制してChannelへ通知送信 | 送信Message ID |
 | `editMessage` | Message編集 | なし |
 | `sendAttachment` | Bufferを添付して送信 | 送信Message ID |
+| `sendAttachmentFile` | Task所有のFileを添付して送信 | 送信Message ID |
 | `addReaction` | MessageへReaction追加 | なし |
 | `clearReactions` | MessageのReactionを全削除 | なし |
+| `resolveGuildMembers` | 指定ユーザー・ロールIDに一致するGuild memberを有限件解決 | `membersResolved` |
 
 成功・失敗にかかわらず、実行結果を`actionResult`としてCoreへ返す。Adapterは自動再試行せず、失敗を安定したcodeとretry可否へ分類する。内部ErrorやStack TraceはProtocolへ含めず、Local logだけへ出す。
 

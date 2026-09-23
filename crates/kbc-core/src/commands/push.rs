@@ -5,15 +5,11 @@ use std::sync::Arc;
 use kbc_protocol::CoreActionData;
 
 use crate::command::{Command, CommandContext, CommandFuture, CommandMetadata, CommandOutput};
+use crate::permissions::has_maintainer_access;
 use crate::storage::{NotificationCategory, StorageService, Subscription};
 
-const ADMINISTRATOR_IDS: [&str; 3] = [
-    "1447045405257760820",
-    "1347420765410295928",
-    "1138400546823340102",
-];
 const USAGE_MESSAGE: &str = "使い方: o.push skd / o.push ad / o.push notice（解除は末尾に off）";
-const PERMISSION_MESSAGE: &str = "通知先の変更にはBot管理者・健康維持メンテナー権限が必要です。";
+const PERMISSION_MESSAGE: &str = "通知先の変更にはBot管理者・Botメンテナー権限が必要です。";
 
 pub(super) struct PushCommand {
     metadata: CommandMetadata,
@@ -41,8 +37,16 @@ impl PushCommand {
         let Some(request) = parse_request(arguments) else {
             return message(context.channel_id(), USAGE_MESSAGE);
         };
-        if !ADMINISTRATOR_IDS.contains(&context.user_id()) {
-            return message(context.channel_id(), PERMISSION_MESSAGE);
+        match has_maintainer_access(&self.storage, context).await {
+            Ok(true) => {}
+            Ok(false) => return message(context.channel_id(), PERMISSION_MESSAGE),
+            Err(error) => {
+                eprintln!("Maintainer permission load failed: {error}");
+                return message(
+                    context.channel_id(),
+                    "❌ 権限情報の読み込みに失敗しました。時間をおいて再度お試しください。",
+                );
+            }
         }
         let Some(guild_id) = context.guild_id() else {
             return message(context.channel_id(), USAGE_MESSAGE);

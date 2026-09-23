@@ -1,10 +1,11 @@
-//! 組み込みCommandを登録する。
+﻿//! 組み込みCommandを登録する。
 
 pub(crate) mod common;
 mod eventdata;
 mod gatya;
 mod help;
 mod item;
+mod maint;
 mod push;
 mod sale;
 pub(crate) mod skd;
@@ -25,6 +26,7 @@ use eventdata::EventDataCommand;
 use gatya::{GatyaCommand, RegisteredGatyaDataSource};
 use help::HelpCommand;
 use item::{ItemCommand, RegisteredItemDataSource};
+use maint::MaintCommand;
 use push::PushCommand;
 use sale::{RegisteredSaleDataSource, SaleCommand};
 use skd::SkdCommand;
@@ -55,7 +57,15 @@ pub(crate) fn built_in_commands(
     let push_help = content
         .help("push")
         .ok_or(MissingCommandContent::CommandHelp("push"))?;
-    commands.push(Box::new(PushCommand::new(push_help, storage)));
+    commands.push(Box::new(PushCommand::new(push_help, Arc::clone(&storage))));
+    let maint_help = content
+        .help("maint")
+        .ok_or(MissingCommandContent::CommandHelp("maint"))?;
+    commands.push(Box::new(MaintCommand::new(
+        maint_help,
+        storage,
+        Arc::clone(&tasks),
+    )));
     let item_help = content
         .help("item")
         .ok_or(MissingCommandContent::CommandHelp("item"))?;

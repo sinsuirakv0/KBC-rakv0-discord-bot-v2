@@ -35,6 +35,7 @@ GitHubのowner、repository、tokenは3つ揃っている場合だけ有効に�
 - Repositoryがprivateで、archived/disabledでないことを確認する。
 - branchと`meta.json`のschemaを確認する。
 - `config/guilds/*.json`を起動時に復元する。
+- Bot全体で共通の`config/maintainers.json`を起動時に復元する。ファイルがまだ存在しない場合は空設定として扱う。
 - 1文書256 KiB、1Directory 999 Fileを上限とする。
 - Writeは1秒間隔で直列化する。
 - SHA付き更新で競合上書きを防ぐ。
@@ -42,7 +43,9 @@ GitHubのowner、repository、tokenは3つ揃っている場合だけ有効に�
 - 応答消失時は保存内容を再読込し、一致した場合だけ成功とする。
 - Rate limit検知後は60秒のcooldownを置く。
 
-`o.push`は固定管理者IDを照合し、Storage保存成功後だけ登録・解除成功を返信する。同じ登録の再実行は重複もWriteも発生させない。
+`o.push`は固定管理者ID、登録ユーザーID、実行者の所持ロールIDを照合し、Storage保存成功後だけ登録・解除成功を返信する。同じ登録の再実行は重複もWriteも発生させない。
+
+`o.maint maintainer`は固定Bot管理者だけが実行できる。最大64件のユーザーID・ロールIDを`config/maintainers.json`へ保存し、SHA競合時はGuild設定と同じく最新版へ変更を再適用して1回だけ再試行する。`list`のGuild member解決はDiscord固有処理としてAdapterへ有限Actionを依頼し、権限と表示内容の判断はCoreに残す。
 
 ## NotificationService
 

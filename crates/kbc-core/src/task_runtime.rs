@@ -1,4 +1,4 @@
-//! 長時間処理の有限Queue、進捗、Action結果、File cleanupを管理する。
+﻿//! 長時間処理の有限Queue、進捗、Action結果、File cleanupを管理する。
 
 use std::collections::HashMap;
 use std::fmt::{Display, Formatter};
@@ -226,6 +226,14 @@ impl TaskRuntime {
         } else {
             false
         }
+    }
+
+    pub(crate) async fn request_adapter(
+        &self,
+        request_id: &RequestId,
+        action: CoreActionData,
+    ) -> Result<ActionOutcome, &'static str> {
+        perform_action(&self.shared, 0, request_id, action).await
     }
 
     pub(crate) async fn shutdown(&self) -> Result<(), RuntimeError> {
