@@ -1,4 +1,4 @@
-//! Motion TaskのAsset取得、2-pass描画、Encoder、出力File作成を接続する。
+﻿//! Motion TaskのAsset取得、2-pass描画、Encoder、出力File作成を接続する。
 
 use std::fs::File;
 use std::io::BufWriter;
@@ -25,6 +25,7 @@ use super::request::MotionFormat;
 
 const FRAME_RATE: u32 = 30;
 const STDERR_LIMIT: usize = 8 * 1024;
+const STDERR_READ_BUFFER: usize = 4 * 1024;
 const PALETTE_SAMPLE_COUNT: usize = 16;
 const PROGRESS_FRAME_INTERVAL: usize = 16;
 
@@ -512,28 +513,53 @@ fn start_encoder(
 
 async fn finish_encoder(
     mut child: Child,
-    mut stderr: tokio::process::ChildStderr,
+    stderr: tokio::process::ChildStderr,
 ) -> Result<(), MotionError> {
-    let stderr_task = tokio::spawn(async move {
-        let mut data = Vec::new();
-        let _ = stderr.read_to_end(&mut data).await;
-        if data.len() > STDERR_LIMIT {
-            data.drain(..data.len() - STDERR_LIMIT);
-        }
-        String::from_utf8_lossy(&data).into_owned()
-    });
-    let status = child
-        .wait()
-        .await
-        .map_err(|error| MotionError::render(format!("FFmpeg wait failed: {error}")))?;
-    let stderr = stderr_task.await.unwrap_or_default();
+    let stderr_task = tokio::spawn(read_stderr_tail(stderr));
+    let status = child.wait().await;
+    let stderr_tail = stderr_task.await.unwrap_or_default();
+    let status =
+        status.map_err(|error| MotionError::render(format!("FFmpeg wait failed: {error}")))?;
     if status.success() {
         Ok(())
     } else {
+        let stderr = String::from_utf8_lossy(&stderr_tail);
         Err(MotionError::render(format!(
             "FFmpeg exited with {status}: {stderr}"
         )))
     }
+}
+
+async fn read_stderr_tail(mut stderr: tokio::process::ChildStderr) -> Vec<u8> {
+    let mut tail = Vec::with_capacity(STDERR_LIMIT);
+    let mut buffer = [0; STDERR_READ_BUFFER];
+    loop {
+        let read = match stderr.read(&mut buffer).await {
+            Ok(0) | Err(_) => break,
+            Ok(read) => read,
+        };
+        append_tail(&mut tail, &buffer[..read], STDERR_LIMIT);
+    }
+    tail
+}
+
+fn append_tail(tail: &mut Vec<u8>, chunk: &[u8], limit: usize) {
+    if limit == 0 {
+        tail.clear();
+        return;
+    }
+    if chunk.len() >= limit {
+        tail.clear();
+        tail.extend_from_slice(&chunk[chunk.len() - limit..]);
+        return;
+    }
+
+    let overflow = tail.len().saturating_add(chunk.len()).saturating_sub(limit);
+    if overflow > 0 {
+        tail.copy_within(overflow.., 0);
+        tail.truncate(tail.len() - overflow);
+    }
+    tail.extend_from_slice(chunk);
 }
 
 async fn stop_encoder(child: &mut Child) {
@@ -555,4 +581,20 @@ fn required_ffmpeg(path: Option<&Path>) -> Result<PathBuf, MotionError> {
     path.filter(|path| path.is_file())
         .map(Path::to_owned)
         .ok_or_else(|| MotionError::render("FFmpeg executable is not configured"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::append_tail;
+
+    #[test]
+    fn stderr_tail_keeps_only_the_latest_bytes() {
+        let mut tail = Vec::with_capacity(5);
+        append_tail(&mut tail, b"abc", 5);
+        append_tail(&mut tail, b"def", 5);
+        assert_eq!(tail, b"bcdef");
+
+        append_tail(&mut tail, b"0123456789", 5);
+        assert_eq!(tail, b"56789");
+    }
 }

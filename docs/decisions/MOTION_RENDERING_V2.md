@@ -253,6 +253,8 @@ cleanup完了前に次Taskへslotを渡さない。
 - 圧縮済みAttachment: 最大8 MiB
 - FFmpeg stderr保持: 末尾8 KiB
 
+FFmpeg stderrは4 KiBずつstreamし、読込中も末尾8 KiBだけを固定容量の`Vec<u8>`へ保持する。Process終了後に全量から切り詰める方式は使わないため、大量stderrでも保持量はtail bufferとread bufferの範囲に留まる。
+
 入力Assetは共有`HttpService`の既存Response上限を使う。上限超過時に自動で品質を落とさず、利用者へ範囲短縮を案内する。
 
 ## 計測
