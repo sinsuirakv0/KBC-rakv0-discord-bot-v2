@@ -41,6 +41,8 @@ Discordからの手動Cancel UIと`TaskCancellation` Protocol Eventは旧仕様�
 
 Motion Taskは予約後に最初の進捗Messageを`sendMessage`し、その`actionResult`で得たmessage IDへTaskを結び付ける。Message送信に失敗した場合は重い処理を開始せず予約を解放する。
 
+`ut` / `tut`の検索用Index取得はCommandと共有するcached経路として維持する。一方、Motion専用の`UnitBuy`取得、Motion plan解決、Asset存在確認はTask登録後かつ実行slot取得後に行う。Task Queueが満杯の場合は、これらのRemote I/Oを開始する前にbusyを返す。
+
 ```text
 Command
 → Task slot予約
@@ -67,6 +69,10 @@ Task Queueと進捗Event Queueはboundedとする。進捗は最新状態だけ�
 timeoutまたはshutdown時は最初にCancellationを通知し、CPU workerとFFmpegを停止する。その後、一時Fileを削除する。cleanup完了前にTask slotを次へ渡さない。
 
 RustのFutureをdropするだけでは`spawn_blocking`や外部Processは止まらないため、Motion rendererはCancellationを明示的に確認し、外部Process killとworker終了待ちを実装する。
+
+Task Jobがprogress Senderをdropした場合は、`watch::Receiver::changed()`を以後の`select!`対象から外す。channel closeの即時完了によるbusy loopを防ぎ、Job完了・timeout・shutdownの監視を継続する。
+
+SchedulerはTokio task IDとCore内部Task IDの対応を保持する。Task FutureがpanicまたはcancelでJoinErrorになった場合はTask IDと種別を記録し、決定的なTask workspaceを回収する。Task slot、active permit、FFmpeg childは各TaskのRAII所有を維持する。
 
 ## Resource Managerとの境界
 

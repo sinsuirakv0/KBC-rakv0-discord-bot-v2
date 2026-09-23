@@ -13,7 +13,7 @@ use kbc_protocol::{
     ActionId, ActionOutcome, CoreAction, CoreActionData, PROTOCOL_VERSION, RequestId,
 };
 use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore, mpsc, oneshot, watch};
-use tokio::task::{JoinHandle, JoinSet};
+use tokio::task::{Id as TokioTaskId, JoinError, JoinHandle, JoinSet};
 use tokio::time::{Instant, MissedTickBehavior, interval_at, sleep_until, timeout};
 use tokio_util::sync::CancellationToken;
 
@@ -253,21 +253,57 @@ async fn run_scheduler(
 ) {
     let mut shutdown_receiver = shared.shutdown_receiver.clone();
     let mut tasks = JoinSet::new();
+    let mut task_ids = HashMap::new();
     loop {
         tokio::select! {
             biased;
             _ = wait_for_shutdown(&mut shutdown_receiver) => break,
-            Some(_) = tasks.join_next(), if !tasks.is_empty() => {}
+            result = tasks.join_next_with_id(), if !tasks.is_empty() => {
+                if let Some(result) = result {
+                    handle_task_join(result, &mut task_ids).await;
+                }
+            }
             submission = submission_receiver.recv() => match submission {
                 Some(task) => {
+                    let task_id = task.id;
                     let shared = Arc::clone(&shared);
-                    tasks.spawn(async move { run_task(task, shared).await });
+                    let abort_handle = tasks.spawn(async move { run_task(task, shared).await });
+                    task_ids.insert(abort_handle.id(), task_id);
                 }
                 None => break,
             }
         }
     }
-    while tasks.join_next().await.is_some() {}
+    while let Some(result) = tasks.join_next_with_id().await {
+        handle_task_join(result, &mut task_ids).await;
+    }
+}
+
+async fn handle_task_join(
+    result: Result<(TokioTaskId, ()), JoinError>,
+    task_ids: &mut HashMap<TokioTaskId, u64>,
+) {
+    match result {
+        Ok((tokio_id, ())) => {
+            task_ids.remove(&tokio_id);
+        }
+        Err(error) => {
+            let task_id = task_ids.remove(&error.id());
+            let failure = if error.is_panic() {
+                "panicked"
+            } else if error.is_cancelled() {
+                "was cancelled"
+            } else {
+                "failed to join"
+            };
+            if let Some(task_id) = task_id {
+                eprintln!("Task {task_id} {failure}: {error}");
+                cleanup_task_workspace(task_id).await;
+            } else {
+                eprintln!("Unknown task {failure}: {error}");
+            }
+        }
+    }
 }
 
 async fn run_task(task: QueuedTask, shared: Arc<TaskShared>) {
@@ -330,6 +366,7 @@ async fn run_task(task: QueuedTask, shared: Arc<TaskShared>) {
         )
         .await;
         eprintln!("Task {id} workspace creation failed: {error}");
+        cleanup_task_workspace(id).await;
         drop(active);
         return;
     }
@@ -395,11 +432,7 @@ async fn run_task(task: QueuedTask, shared: Arc<TaskShared>) {
         }
     }
 
-    if let Err(error) = tokio::fs::remove_dir_all(&workspace).await
-        && error.kind() != std::io::ErrorKind::NotFound
-    {
-        eprintln!("Task {id} workspace cleanup failed: {error}");
-    }
+    cleanup_task_workspace(id).await;
     drop(active);
 }
 
@@ -422,6 +455,7 @@ async fn supervise_job(
     let mut progress_tick = interval_at(Instant::now() + PROGRESS_INTERVAL, PROGRESS_INTERVAL);
     progress_tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
     let mut last_sent = String::new();
+    let mut progress_closed = false;
     let mut shutdown_receiver = shared.shutdown_receiver.clone();
 
     loop {
@@ -448,9 +482,10 @@ async fn supervise_job(
                     TaskFailure::new("❌ 処理の進行が停止したため中断しました", "stall timeout"),
                 ).await;
             }
-            changed = progress_receiver.changed() => {
-                if changed.is_ok() {
-                    stall_timeout.as_mut().reset(Instant::now() + STALL_TIMEOUT);
+            changed = progress_receiver.changed(), if !progress_closed => {
+                match changed {
+                    Ok(()) => stall_timeout.as_mut().reset(Instant::now() + STALL_TIMEOUT),
+                    Err(_) => progress_closed = true,
                 }
             }
             _ = progress_tick.tick() => {
@@ -610,6 +645,14 @@ fn task_workspace(task_id: u64) -> PathBuf {
         .join(format!("task-{}-{task_id}", std::process::id()))
 }
 
+async fn cleanup_task_workspace(task_id: u64) {
+    if let Err(error) = tokio::fs::remove_dir_all(task_workspace(task_id)).await
+        && error.kind() != std::io::ErrorKind::NotFound
+    {
+        eprintln!("Task {task_id} workspace cleanup failed: {error}");
+    }
+}
+
 async fn wait_for_shutdown(receiver: &mut watch::Receiver<bool>) {
     if *receiver.borrow() {
         return;
@@ -740,5 +783,72 @@ mod tests {
         assert!(result.is_err());
         assert!(cancellation.is_cancelled());
         assert!(observed.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn closed_progress_channel_does_not_starve_job() {
+        let (action_sender, _action_receiver) = mpsc::channel(1);
+        let (_shutdown_sender, shutdown_receiver) = watch::channel(false);
+        let shared = TaskShared {
+            action_sender,
+            action_waiters: Mutex::new(HashMap::new()),
+            active: Arc::new(Semaphore::new(1)),
+            next_action_sequence: AtomicU64::new(1),
+            shutdown_receiver,
+        };
+        let cancellation = CancellationToken::new();
+        let (progress_sender, progress_receiver) = watch::channel(String::new());
+        drop(progress_sender);
+        let job: TaskFuture = Box::pin(async {
+            tokio::task::yield_now().await;
+            Err(TaskFailure::new("finished", "test job finished"))
+        });
+
+        let result = timeout(
+            Duration::from_secs(1),
+            supervise_job(
+                job,
+                progress_receiver,
+                cancellation,
+                &shared,
+                1,
+                &RequestId::new("request:closed-progress"),
+                "channel:test",
+                "message:test",
+            ),
+        )
+        .await
+        .expect("progress channel切断後にjobが完了しませんでした");
+
+        let Err(result) = result else {
+            panic!("test jobは失敗を返す必要があります");
+        };
+
+        assert_eq!(result.detail, "test job finished");
+    }
+
+    #[tokio::test]
+    async fn panic_is_reported_with_task_id_and_workspace_is_removed() {
+        let task_id = u64::MAX;
+        cleanup_task_workspace(task_id).await;
+        let workspace = task_workspace(task_id);
+        tokio::fs::create_dir_all(&workspace)
+            .await
+            .expect("test workspaceを作成できませんでした");
+        tokio::fs::write(workspace.join("artifact"), b"test")
+            .await
+            .expect("test artifactを作成できませんでした");
+        let mut tasks = JoinSet::new();
+        let abort_handle = tasks.spawn(async { panic!("test task panic") });
+        let mut task_ids = HashMap::from([(abort_handle.id(), task_id)]);
+
+        let result = tasks
+            .join_next_with_id()
+            .await
+            .expect("panicしたtaskのJoin結果がありません");
+        handle_task_join(result, &mut task_ids).await;
+
+        assert!(task_ids.is_empty());
+        assert!(!workspace.exists());
     }
 }
