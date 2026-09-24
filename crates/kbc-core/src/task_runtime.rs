@@ -735,6 +735,7 @@ mod tests {
             CoreActionData::SendAttachmentFile { path, .. } => path.clone(),
             action => panic!("unexpected attachment action: {action:?}"),
         };
+        assert!(Path::new(&attachment_path).exists());
         assert!(
             runtime
                 .handle_action_result(
@@ -749,7 +750,6 @@ mod tests {
             terminal.action,
             CoreActionData::EditMessage { content, .. } if content == "✅ 生成が完了しました"
         ));
-        assert!(Path::new(&attachment_path).exists());
 
         shutdown_sender
             .send(true)
