@@ -18,6 +18,8 @@ RUN npm run compile:ts && npm prune --omit=dev
 FROM node:24-bookworm-slim
 WORKDIR /app
 ENV NODE_ENV=production
+LABEL org.opencontainers.image.source="https://github.com/sinsuirakv0/KBC-rakv0-discord-bot-v2"
+LABEL org.opencontainers.image.description="KBC Discord Bot V2 (Rust Core and TypeScript Discord Adapter)"
 
 COPY package.json ./
 COPY apps/discord/package.json ./apps/discord/package.json
