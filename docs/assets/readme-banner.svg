@@ -17,6 +17,9 @@
     <filter id="shadow" x="-30%" y="-30%" width="160%" height="160%">
       <feDropShadow dx="0" dy="14" stdDeviation="18" flood-color="#000000" flood-opacity="0.4"/>
     </filter>
+    <clipPath id="avatar-clip">
+      <rect width="196" height="196" rx="48"/>
+    </clipPath>
   </defs>
 
   <rect width="1280" height="360" rx="28" fill="url(#background)"/>
@@ -26,12 +29,8 @@
 
   <g transform="translate(88 82)" filter="url(#shadow)">
     <rect width="196" height="196" rx="48" fill="url(#icon)"/>
-    <path d="M48 79 L62 44 L85 65 M148 79 L134 44 L111 65" fill="#10162b" stroke="#10162b" stroke-width="9" stroke-linejoin="round"/>
-    <path d="M51 87 C51 61 72 51 98 51 C124 51 145 61 145 87 L145 119 C145 151 124 165 98 165 C72 165 51 151 51 119 Z" fill="#10162b"/>
-    <circle cx="76" cy="105" r="8" fill="#5eead4"/>
-    <circle cx="120" cy="105" r="8" fill="#8b5cf6"/>
-    <path d="M91 125 L98 131 L105 125 M98 131 L98 143" fill="none" stroke="#ffffff" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
-    <path d="M64 127 L33 119 M65 138 L34 143 M132 127 L163 119 M131 138 L162 143" stroke="#ffffff" stroke-width="4" stroke-linecap="round" opacity="0.78"/>
+    <image href="bot-avatar.png" width="196" height="196" preserveAspectRatio="xMidYMid slice" clip-path="url(#avatar-clip)"/>
+    <rect x="1.5" y="1.5" width="193" height="193" rx="46.5" fill="none" stroke="#ffffff" stroke-opacity="0.22" stroke-width="3"/>
   </g>
 
   <g font-family="Segoe UI, Inter, Arial, sans-serif">
