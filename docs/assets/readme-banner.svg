@@ -1,0 +1,52 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="360" viewBox="0 0 1280 360" role="img" aria-labelledby="title description">
+  <title id="title">KBC Discord Bot V2</title>
+  <desc id="description">Rust Core and TypeScript Discord Adapter</desc>
+  <defs>
+    <linearGradient id="background" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0b1020"/>
+      <stop offset="0.52" stop-color="#151b33"/>
+      <stop offset="1" stop-color="#25134d"/>
+    </linearGradient>
+    <linearGradient id="icon" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#5eead4"/>
+      <stop offset="1" stop-color="#8b5cf6"/>
+    </linearGradient>
+    <pattern id="grid" width="36" height="36" patternUnits="userSpaceOnUse">
+      <path d="M 36 0 L 0 0 0 36" fill="none" stroke="#ffffff" stroke-opacity="0.045"/>
+    </pattern>
+    <filter id="shadow" x="-30%" y="-30%" width="160%" height="160%">
+      <feDropShadow dx="0" dy="14" stdDeviation="18" flood-color="#000000" flood-opacity="0.4"/>
+    </filter>
+  </defs>
+
+  <rect width="1280" height="360" rx="28" fill="url(#background)"/>
+  <rect width="1280" height="360" rx="28" fill="url(#grid)"/>
+  <circle cx="1160" cy="52" r="170" fill="#8b5cf6" opacity="0.11"/>
+  <circle cx="1040" cy="330" r="220" fill="#2dd4bf" opacity="0.08"/>
+
+  <g transform="translate(88 82)" filter="url(#shadow)">
+    <rect width="196" height="196" rx="48" fill="url(#icon)"/>
+    <path d="M48 79 L62 44 L85 65 M148 79 L134 44 L111 65" fill="#10162b" stroke="#10162b" stroke-width="9" stroke-linejoin="round"/>
+    <path d="M51 87 C51 61 72 51 98 51 C124 51 145 61 145 87 L145 119 C145 151 124 165 98 165 C72 165 51 151 51 119 Z" fill="#10162b"/>
+    <circle cx="76" cy="105" r="8" fill="#5eead4"/>
+    <circle cx="120" cy="105" r="8" fill="#8b5cf6"/>
+    <path d="M91 125 L98 131 L105 125 M98 131 L98 143" fill="none" stroke="#ffffff" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M64 127 L33 119 M65 138 L34 143 M132 127 L163 119 M131 138 L162 143" stroke="#ffffff" stroke-width="4" stroke-linecap="round" opacity="0.78"/>
+  </g>
+
+  <g font-family="Segoe UI, Inter, Arial, sans-serif">
+    <text x="340" y="132" fill="#ffffff" font-size="56" font-weight="700" letter-spacing="1">KBC Discord Bot V2</text>
+    <text x="343" y="177" fill="#cbd5e1" font-size="23" font-weight="400">A reliable, resource-bounded Discord bot runtime.</text>
+
+    <g transform="translate(342 220)" font-size="15" font-weight="700" letter-spacing="1.2">
+      <rect width="142" height="42" rx="21" fill="#5eead4" fill-opacity="0.13" stroke="#5eead4" stroke-opacity="0.6"/>
+      <text x="71" y="27" fill="#99f6e4" text-anchor="middle">RUST CORE</text>
+
+      <rect x="160" width="174" height="42" rx="21" fill="#8b5cf6" fill-opacity="0.14" stroke="#a78bfa" stroke-opacity="0.6"/>
+      <text x="247" y="27" fill="#c4b5fd" text-anchor="middle">KBC PROTOCOL</text>
+
+      <rect x="352" width="208" height="42" rx="21" fill="#60a5fa" fill-opacity="0.12" stroke="#60a5fa" stroke-opacity="0.55"/>
+      <text x="456" y="27" fill="#bfdbfe" text-anchor="middle">DISCORD ADAPTER</text>
+    </g>
+  </g>
+</svg>
