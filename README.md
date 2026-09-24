@@ -1,5 +1,5 @@
 ﻿<p align="center">
-  <img src="docs/assets/readme-banner.svg" alt="KBC Discord Bot V2" width="100%">
+  <img src="docs/assets/readme-banner.png" alt="KBC Discord Bot V2" width="100%">
 </p>
 
 <p align="center">
