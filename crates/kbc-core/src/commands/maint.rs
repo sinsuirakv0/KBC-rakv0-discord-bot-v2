@@ -5,13 +5,15 @@ use std::sync::Arc;
 use kbc_protocol::{ActionOutcome, CoreActionData};
 
 use crate::command::{Command, CommandContext, CommandFuture, CommandMetadata, CommandOutput};
-use crate::permissions::is_bot_administrator;
+use crate::permissions::{has_maintainer_access, is_bot_administrator};
 use crate::storage::{MAX_MAINTAINER_SUBJECTS, StorageService};
 use crate::task_runtime::TaskRuntime;
 
 const USAGE_MESSAGE: &str =
     "使い方: o.maint maintainer <ユーザーIDまたはロールID> [del] / o.maint maintainer list";
-const PERMISSION_MESSAGE: &str = "このコマンドは固定Bot管理者だけが実行できます。";
+const UPDATE_PERMISSION_MESSAGE: &str = "メンテナーの変更は固定Bot管理者だけが実行できます。";
+const LIST_PERMISSION_MESSAGE: &str =
+    "メンテナー一覧は固定Bot管理者またはBotメンテナーだけが表示できます。";
 const MAX_LIST_MEMBERS: u16 = 25;
 
 pub(super) struct MaintCommand {
@@ -42,15 +44,27 @@ impl MaintCommand {
         let Some(request) = parse_request(arguments) else {
             return message(context.channel_id(), USAGE_MESSAGE);
         };
-        if !is_bot_administrator(context.user_id()) {
-            return message(context.channel_id(), PERMISSION_MESSAGE);
-        }
         match request {
             MaintRequest::Update {
                 subject_id,
                 enabled,
-            } => self.update(context, &subject_id, enabled).await,
-            MaintRequest::List => self.list(context).await,
+            } => {
+                if !is_bot_administrator(context.user_id()) {
+                    return message(context.channel_id(), UPDATE_PERMISSION_MESSAGE);
+                }
+                self.update(context, &subject_id, enabled).await
+            }
+            MaintRequest::List => match has_maintainer_access(&self.storage, context).await {
+                Ok(true) => self.list(context).await,
+                Ok(false) => message(context.channel_id(), LIST_PERMISSION_MESSAGE),
+                Err(error) => {
+                    eprintln!("Maintainer permission load failed: {error}");
+                    message(
+                        context.channel_id(),
+                        "❌ 権限情報の読み込みに失敗しました。時間をおいて再度お試しください。",
+                    )
+                }
+            },
         }
     }
 

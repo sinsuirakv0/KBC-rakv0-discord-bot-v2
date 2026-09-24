@@ -16,12 +16,13 @@
 - Discord Developer PortalのServer Members Intentを有効化し、Local Botが正常にloginした。
 - 固定Bot管理者によるメンテナー登録、GitHub Storageへの保存、`list`での現在Guild内ユーザー名表示を実Discordで確認した。
 - commit `5ee9566`をmainへpushし、Northflankのbuild・deployment `success`、`/health/live` 200 alive、`/health` 200 readyを確認した。
+- `list`の閲覧権限を固定Bot管理者だけから、固定Bot管理者または登録済みメンテナーへ変更した。追加・削除は固定Bot管理者限定のまま維持する。
 
 ## 残作業
 
 1. 登録対象が固定Bot管理者ではない場合、対象ユーザー本人または対象ロール所持者で`o.push`が通ることを確認する。
 2. 追加した登録対象が試験専用で不要なら末尾`del`で削除する。
-3. 本環境で`o.maint maintainer list`を実行し、Localと同じ一覧が返ることを確認する。
+3. 本環境で登録済みメンテナーから`o.maint maintainer list`を実行し、一覧が返ることを確認する。
 
 ## 補足
 
