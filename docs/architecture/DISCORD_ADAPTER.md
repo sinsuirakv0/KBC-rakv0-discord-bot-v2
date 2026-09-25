@@ -23,6 +23,7 @@ Command解析、Session状態、再試行Policy、Domain LogicをTypeScriptへ�
 
 - `messageCreate` → `CoreEvent.messageCreate`
 - `messageReactionAdd` → `CoreEvent.reactionAdd`
+- `messageReactionRemove` → `CoreEvent.reactionRemove`
 
 Bot自身を含むBot userのEventは除外する。Discord SnowflakeはStringのまま渡し、Discord Object自体はCoreへ渡さない。
 
@@ -56,7 +57,7 @@ ActionはAdapter内の有限Dispatcherで実行する。
 - 全体同時実行数: 3
 - 実行中と待機中の合計: 最大16件
 - Channelを持つAction: `channelId`ごとにFIFO
-- `resolveGuildMembers`: `guildId`ごとにFIFO
+- `resolveGuildMembers`とRole操作: `guildId`ごとにFIFO
 
 同一Channelでは、複数返信の表示順、`clearReactions`後の編集・返信、通知の送信後編集を維持する必要があるため直列実行する。Session、Task Runtime、Notification ServiceがDiscord操作の結果に依存する後続Actionは、先行Actionの`actionResult`をCoreが受信してから生成される。したがって`ActionId`の対応を維持したまま、異なるChannelのActionは並行実行できる。
 
@@ -72,10 +73,14 @@ Dispatcherは待機中の先頭だけを機械的に実行せず、現在実行�
 | `addReaction` | MessageへReaction追加 | なし |
 | `clearReactions` | MessageのReactionを全削除 | なし |
 | `resolveGuildMembers` | 指定ユーザー・ロールIDに一致するGuild memberを有限件解決 | `membersResolved` |
+| `createGuildRole` | 権限ゼロの通知用Roleを作成 | `roleResolved` |
+| `resolveAssignableRole` | Roleが権限ゼロかつBot管理可能か確認 | `roleResolved` |
+| `addGuildMemberRole` | 選択Reactionに対応するRoleをMemberへ付与 | `success` |
+| `removeGuildMemberRole` | 選択Reactionに対応するRoleをMemberから解除 | `success` |
 
 成功・失敗にかかわらず、元の`ActionId`と`RequestId`を維持した結果を`actionResult`としてCoreへ返す。異なるordering keyの結果順は実行完了順となるが、Session Manager、Task Runtime、Notification Serviceは`ActionId`で待機元を特定する。Adapterは自動再試行せず、失敗を安定したcodeとretry可否へ分類する。内部ErrorやStack TraceはProtocolへ含めず、Local logだけへ出す。
 
-Message送信と編集では`allowedMentions.parse`を空にする。Coreからの文字列だけで意図せずUser、Role、全員へmentionしないためである。将来mentionが必要になった場合は、許可対象をProtocolへ明示する。
+Message送信と編集では`allowedMentions.parse`を空にする。通常の`sendMessage`を使う`o.skd`を含め、Coreからの文字列だけでUser、Role、全員へmentionしない。更新通知の`sendNotification`だけはProtocolの`allowedRoleIds`に列挙されたRoleを明示許可し、その他のmentionは無効のままとする。
 
 Local実行では送信・編集本文の先頭へ`[local] `を付け、本番Botと区別する。`NODE_ENV=production`の場合だけprefixを付けない。本文なしのAttachmentをLocalから送る場合は`[local]`自体を本文とする。Docker runtimeは`NODE_ENV=production`を明示する。
 

@@ -8,7 +8,7 @@
 - メンテナー設定はGuild単位ではなく、Bot全体で共通の設定とする。
 - 登録値はDiscordユーザーIDまたはDiscordロールIDであり、Discord上に専用ロールを新設しない。
 - Command実行者のユーザーID、または所持ロールIDのいずれかが登録値と一致すればメンテナーとして扱う。
-- 現在メンテナー権限を使う管理Commandは`o.push`である。通常の公開Commandは制限しない。
+- メンテナー権限は`o.push`、通知用Role作成、Role選択パネル設定に使う。通常の公開Commandは制限しない。
 
 ## Command
 
@@ -31,6 +31,14 @@ private GitHub Data Repositoryの`config/maintainers.json`を正本とする。
 ```
 
 更新は既存Storageと同じSHA付きWrite、競合時1回再試行、応答消失時の再読込確認を使う。Guildごとの設定ファイルには保存しない。
+
+## 通知用Role
+
+通知用Roleと選択パネルはメンテナー識別用Roleとは別で、Guildごとに保存する。`o.maint role <名前>`は権限ゼロのRoleだけを作成し、自動では選択肢へ追加しない。`o.maint pushsetting <Role ID> add|del`で最大9件の選択肢を管理し、引数なしの`o.maint pushsetting`で現在Channelへ単一の選択パネルを設置する。
+
+一般Memberは番号Reactionの追加でRoleを取得し、同じReactionの解除でRoleを外す。Role付与時は権限ゼロ・Bot管理可能を毎回再検査する。パネルを移動した場合は旧パネルを無効化する。
+
+`o.push <category> role:<Role ID> [del]`は、通知先が登録済みで、かつRoleが選択肢へ登録済みの場合だけ通知mentionを変更する。通知先は自動登録しない。`o.push skd url <URL> add|del`はSKD通知の関連サイトへGuild固有URLを追加・削除する。
 
 ## Discord要件
 

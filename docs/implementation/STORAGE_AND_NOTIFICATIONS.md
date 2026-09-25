@@ -36,6 +36,7 @@ GitHubのowner、repository、tokenは3つ揃っている場合だけ有効に�
 - branchと`meta.json`のschemaを確認する。
 - `config/guilds/*.json`を起動時に復元する。
 - Bot全体で共通の`config/maintainers.json`を起動時に復元する。ファイルがまだ存在しない場合は空設定として扱う。
+- Guild設定には通知先に加え、最大9件の通知用Role、単一のRole選択パネル、通知先別mention Role、最大9件のSKD関連サイトURLを保存する。追加fieldはSerde defaultで旧設定と互換にする。
 - 1文書256 KiB、1Directory 999 Fileを上限とする。
 - Writeは1秒間隔で直列化する。
 - SHA付き更新で競合上書きを防ぐ。
@@ -46,6 +47,10 @@ GitHubのowner、repository、tokenは3つ揃っている場合だけ有効に�
 `o.push`は固定管理者ID、登録ユーザーID、実行者の所持ロールIDを照合し、Storage保存成功後だけ登録・解除成功を返信する。同じ登録の再実行は重複もWriteも発生させない。
 
 `o.maint maintainer`は固定Bot管理者だけが実行できる。最大64件のユーザーID・ロールIDを`config/maintainers.json`へ保存し、SHA競合時はGuild設定と同じく最新版へ変更を再適用して1回だけ再試行する。`list`のGuild member解決はDiscord固有処理としてAdapterへ有限Actionを依頼し、権限と表示内容の判断はCoreに残す。
+
+`o.maint role`、`o.maint pushsetting`、`o.push ... role:<ID>`、`o.push skd url <URL> add|del`は固定Bot管理者またはBotメンテナーが実行できる。通知用Roleの登録時はAdapterで権限ゼロ・Bot管理可能を確認する。選択肢からRoleを削除した場合は全Subscriptionのmention設定からも同じIDを除くが、既にMemberへ付与済みのRoleは一括解除しない。
+
+Role選択パネルはGuildごとに1件だけ保存する。別Channelで再設置した場合は新Messageを正本として保存した後、旧MessageのReactionを全削除し「通知設定は移動しました」へ編集する。選択肢更新時は本文と番号Reactionを再構築する。
 
 ## NotificationService
 
@@ -63,7 +68,9 @@ pending
 
 `attempting`のまま残った投稿は結果不明であり、自動再投稿せず`reconciliation-required`を返す。message IDが確定済みの編集失敗は、同じEventの再受信時に再編集する。
 
-SKD詳細は`o.skd`と同じParser、差分、名称DataSource、Formatterを使う。生成した本文をEvent Recordへ保存してから、gatya、sale、item、mission、変更、KBCリンクの順で配送する。
+SKD詳細は`o.skd`と同じParser、差分、名称DataSource、Formatterを使う。生成した本文をEvent Recordへ保存してから、gatya、sale、item、mission、変更、関連サイトの順で配送する。関連サイトの先頭は従来のKBC履歴URLであり、`o.skd`実行時と通知配送時に対象Guildの追加URLを末尾へ差し込む。`o.skd`は追加URLを表示しても通常の`sendMessage`を使い、通知Roleをmentionしない。
+
+通知Role mentionは初回の`sendNotification`だけで`allowedRoleIds`を明示する。最終本文への編集とSKD詳細Messageではmentionを許可しないため、1回の更新で重複mentionを発生させない。
 
 ## Local設定
 

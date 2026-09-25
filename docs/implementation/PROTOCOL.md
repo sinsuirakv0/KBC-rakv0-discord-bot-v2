@@ -20,6 +20,10 @@ npm run generate:protocol
 - `CoreEvent::validate_version()`: EventのVersionを共通関数へ渡す
 - `CoreAction::validate_version()`: ActionのVersionを共通関数へ渡す
 - `resolveGuildMembers` / `membersResolved`: Core内のメンテナー設定を、Discord Adapterで現在のGuild memberへ有限件解決する
+- `reactionRemove`: 永続通知ロールパネルの選択解除をCoreへ渡す
+- `createGuildRole` / `resolveAssignableRole` / `roleResolved`: 通知用Roleの作成と安全性確認をDiscord Adapterへ依頼する
+- `addGuildMemberRole` / `removeGuildMemberRole`: Coreが選択したRoleを対象Memberへ付与・解除する
+- `sendNotification.allowedRoleIds`: 更新通知で許可するRole mentionだけを明示する。通常の`sendMessage`にはmention許可を持たせない
 
 ### N-API Bridge
 

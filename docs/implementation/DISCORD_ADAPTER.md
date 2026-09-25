@@ -14,6 +14,7 @@ Phase 4では、Discord Gateway EventをCoreEventへ変換し、CoreActionをDis
 
 - `createMessageCreateEvent(message)`: MessageのID、Role ID、本文だけを`messageCreate`へ変換する
 - `createReactionAddEvent(reaction, user)`: partialを含むReactionから必要なIDとemoji identifierだけを`reactionAdd`へ変換する
+- `createReactionRemoveEvent(reaction, user)`: 同じ最小Dataを`reactionRemove`へ変換する
 - `createActionResultEvent(action, outcome)`: Action IDと元のRequest IDを維持した`actionResult`を作る
 - `createEvent(event, requestId?)`: UUIDを使ってEvent envelopeを作る
 
@@ -27,8 +28,11 @@ Phase 4では、Discord Gateway EventをCoreEventへ変換し、CoreActionをDis
 
 ### Action実行
 
-- `executeCoreAction(client, action, outgoingMessagePrefix)`: Protocol Actionをdiscord.js操作へ変換し、`success`、`membersResolved`のいずれかを返す。送信・編集本文へ環境別prefixを付ける
+- `executeCoreAction(client, action, outgoingMessagePrefix)`: Protocol Actionをdiscord.js操作へ変換し、`success`、`membersResolved`、`roleResolved`のいずれかを返す。送信・編集本文へ環境別prefixを付ける
 - `resolveGuildMembers`: 最大64件の登録IDと最大5,000人のGuild memberを照合し、名前順で最大25人を返す。完全なRole所属者取得にはServer Members Intentを使用する
+- `getManageableRole(guild, roleId, requireNoPermissions)`: managed、`@everyone`、Botより上位のRoleを拒否し、付与時は権限ゼロも検査する
+- `createGuildRole`: 権限・hoist・mentionableを無効にした通知用Roleを作成する
+- `addGuildMemberRole` / `removeGuildMemberRole`: Reactionを行ったMemberだけのRoleを変更する。付与時は毎回権限ゼロを再検査する
 - `createAttachmentMessage(prefix, message)`: 本文なしのLocal Attachmentにも`[local]`識別子を付ける
 - `getSendableChannel(client, channelId)`: fetchしたChannelがtext basedかつsend可能であることを確認する
 - `getMessage(client, channelId, messageId)`: edit以外のMessage対象操作に使うMessageを取得する
@@ -57,6 +61,7 @@ CoreAction
 → executeCoreAction
 ├─ success(messageId?)
 ├─ membersResolved(members, truncated)
+├─ roleResolved(roleId, name)
 └─ failure(code, retryable)
 → createActionResultEvent
 → CoreEventDispatcher
