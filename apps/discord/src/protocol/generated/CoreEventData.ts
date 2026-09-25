@@ -2,4 +2,4 @@
 import type { ActionId } from "./ActionId";
 import type { ActionOutcome } from "./ActionOutcome";
 
-export type CoreEventData = { "type": "messageCreate", guildId: string | null, channelId: string, messageId: string, userId: string, memberRoleIds: Array<string>, content: string, } | { "type": "reactionAdd", guildId: string | null, channelId: string, messageId: string, userId: string, emoji: string, } | { "type": "actionResult", actionId: ActionId, outcome: ActionOutcome, };
+export type CoreEventData = { "type": "messageCreate", guildId: string | null, channelId: string, messageId: string, userId: string, memberRoleIds: Array<string>, content: string, } | { "type": "reactionAdd", guildId: string | null, channelId: string, messageId: string, userId: string, emoji: string, } | { "type": "reactionRemove", guildId: string | null, channelId: string, messageId: string, userId: string, emoji: string, } | { "type": "actionResult", actionId: ActionId, outcome: ActionOutcome, };

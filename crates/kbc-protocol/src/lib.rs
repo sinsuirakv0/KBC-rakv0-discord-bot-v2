@@ -6,7 +6,7 @@ use std::fmt::{Display, Formatter};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-pub const PROTOCOL_VERSION: u32 = 4;
+pub const PROTOCOL_VERSION: u32 = 5;
 
 macro_rules! protocol_id {
     ($name:ident) => {
@@ -66,6 +66,13 @@ pub enum CoreEventData {
         user_id: String,
         emoji: String,
     },
+    ReactionRemove {
+        guild_id: Option<String>,
+        channel_id: String,
+        message_id: String,
+        user_id: String,
+        emoji: String,
+    },
     ActionResult {
         action_id: ActionId,
         outcome: ActionOutcome,
@@ -85,6 +92,10 @@ pub enum ActionOutcome {
     MembersResolved {
         members: Vec<ResolvedGuildMember>,
         truncated: bool,
+    },
+    RoleResolved {
+        role_id: String,
+        name: String,
     },
     Failure {
         code: String,
@@ -129,6 +140,7 @@ pub enum CoreActionData {
         channel_id: String,
         content: String,
         nonce: String,
+        allowed_role_ids: Vec<String>,
     },
     EditMessage {
         channel_id: String,
@@ -163,6 +175,24 @@ pub enum CoreActionData {
         guild_id: String,
         subject_ids: Vec<String>,
         max_members: u16,
+    },
+    CreateGuildRole {
+        guild_id: String,
+        name: String,
+    },
+    ResolveAssignableRole {
+        guild_id: String,
+        role_id: String,
+    },
+    AddGuildMemberRole {
+        guild_id: String,
+        user_id: String,
+        role_id: String,
+    },
+    RemoveGuildMemberRole {
+        guild_id: String,
+        user_id: String,
+        role_id: String,
     },
 }
 

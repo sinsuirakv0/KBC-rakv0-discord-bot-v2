@@ -6,4 +6,17 @@ o.push ad notice  ad　popup_noticeの通知を登録
 実行したチャンネルが通知先になります。
 解除は末尾に off を付けます（例: o.push skd off）。
 
+通知時にメンションするロールは次のように設定します。
+
+o.push skd role:<ロールID>      追加
+o.push skd role:<ロールID> del  削除
+
+先に通知先と o.maint pushsetting <ロールID> add の両方を登録してください。
+複数の通知ロールを設定できます。ロール設定だけでは通知先を自動登録しません。
+
+skd通知の「関連サイト」へサーバー固有URLを追加・削除できます。
+
+o.push skd url <URL> add
+o.push skd url <URL> del
+
 設定には固定Bot管理者・Botメンテナー権限が必要です。

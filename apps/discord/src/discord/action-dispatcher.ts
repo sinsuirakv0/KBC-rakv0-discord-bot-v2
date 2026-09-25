@@ -133,7 +133,13 @@ export class CoreActionDispatcher {
 }
 
 function actionOrderingKey(action: CoreActionData): string {
-  if (action.type === "resolveGuildMembers") {
+  if (
+    action.type === "resolveGuildMembers"
+    || action.type === "createGuildRole"
+    || action.type === "resolveAssignableRole"
+    || action.type === "addGuildMemberRole"
+    || action.type === "removeGuildMemberRole"
+  ) {
     return `guild:${action.guildId}`;
   }
   return `channel:${action.channelId}`;

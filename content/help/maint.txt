@@ -4,6 +4,16 @@ o.maint maintainer <ユーザーIDまたはロールID>      追加
 o.maint maintainer <ユーザーIDまたはロールID> del  削除
 o.maint maintainer list                              現在のサーバー内の一覧
 
+通知ロールの設定
+
+o.maint role <ロール名>                 権限なしの通知用ロールを作成
+o.maint pushsetting <ロールID> add      選択肢へ追加
+o.maint pushsetting <ロールID> del      選択肢から削除
+o.maint pushsetting                     このチャンネルへ選択メッセージを設置
+
 ユーザー・ロールのメンションも指定できます。
 設定は全サーバー共通です。追加・削除は固定Bot管理者だけ、一覧は固定Bot管理者とBotメンテナーが実行できます。
 ロールIDを追加した場合、そのロールを持つユーザー全員にメンテナー権限が付与されます。
+
+通知ロール設定はサーバーごとで、最大9件です。作成・設定・設置にはBot管理者またはBotメンテナー権限が必要です。
+選択メッセージのリアクション追加でロールを取得し、リアクション解除でロールを外せます。

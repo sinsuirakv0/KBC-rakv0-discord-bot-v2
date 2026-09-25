@@ -25,6 +25,7 @@ import {
   createActionResultEvent,
   createMessageCreateEvent,
   createReactionAddEvent,
+  createReactionRemoveEvent,
 } from "./events";
 
 const EVENT_BUFFER_CAPACITY = 64;
@@ -107,6 +108,7 @@ export class DiscordAdapter {
     this.client.once(Events.ClientReady, this.handleReady);
     this.client.on(Events.MessageCreate, this.handleMessageCreate);
     this.client.on(Events.MessageReactionAdd, this.handleReactionAdd);
+    this.client.on(Events.MessageReactionRemove, this.handleReactionRemove);
     this.actionLoop = this.consumeActions().catch((error: unknown) => {
       this.fail(error);
     });
@@ -178,6 +180,16 @@ export class DiscordAdapter {
     this.dispatchEvent(createReactionAddEvent(reaction, user));
   };
 
+  private readonly handleReactionRemove = (
+    reaction: MessageReaction | PartialMessageReaction,
+    user: User | PartialUser,
+  ): void => {
+    if (user.bot || this.isStopping) {
+      return;
+    }
+    this.dispatchEvent(createReactionRemoveEvent(reaction, user));
+  };
+
   private dispatchEvent(event: CoreEvent): void {
     void this.eventDispatcher.submit(event).catch((error: unknown) => {
       this.fail(error);
@@ -241,6 +253,7 @@ export class DiscordAdapter {
     this.client.off(Events.ClientReady, this.handleReady);
     this.client.off(Events.MessageCreate, this.handleMessageCreate);
     this.client.off(Events.MessageReactionAdd, this.handleReactionAdd);
+    this.client.off(Events.MessageReactionRemove, this.handleReactionRemove);
     this.client.destroy();
     this.actionDispatcher.close();
     this.eventDispatcher.close();

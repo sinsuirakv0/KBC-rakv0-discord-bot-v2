@@ -8,6 +8,7 @@ mod content;
 mod motion;
 mod notification;
 mod permissions;
+mod role_panel;
 mod runtime;
 mod services;
 mod session;

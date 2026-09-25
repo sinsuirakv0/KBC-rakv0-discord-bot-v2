@@ -42,8 +42,23 @@ export function createReactionAddEvent(
   reaction: MessageReaction | PartialMessageReaction,
   user: User | PartialUser,
 ): CoreEvent {
+  return createReactionEvent("reactionAdd", reaction, user);
+}
+
+export function createReactionRemoveEvent(
+  reaction: MessageReaction | PartialMessageReaction,
+  user: User | PartialUser,
+): CoreEvent {
+  return createReactionEvent("reactionRemove", reaction, user);
+}
+
+function createReactionEvent(
+  type: "reactionAdd" | "reactionRemove",
+  reaction: MessageReaction | PartialMessageReaction,
+  user: User | PartialUser,
+): CoreEvent {
   return createEvent({
-    type: "reactionAdd",
+    type,
     guildId: reaction.message.guildId,
     channelId: reaction.message.channelId,
     messageId: reaction.message.id,

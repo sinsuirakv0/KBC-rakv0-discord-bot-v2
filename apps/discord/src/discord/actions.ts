@@ -1,6 +1,6 @@
 ﻿import { Buffer } from "node:buffer";
 
-import type { Client, SendableChannels } from "discord.js";
+import type { Client, Guild, Role, SendableChannels } from "discord.js";
 
 import type { ActionOutcome, CoreActionData } from "../protocol";
 
@@ -55,7 +55,7 @@ export async function executeCoreAction(
       const channel = await getSendableChannel(client, action.channelId);
       const message = await channel.send({
         content: `${outgoingMessagePrefix}${action.content}`,
-        allowedMentions: { parse: [] },
+        allowedMentions: { parse: [], roles: action.allowedRoleIds },
         nonce: action.nonce,
         enforceNonce: true,
       });
@@ -133,9 +133,64 @@ export async function executeCoreAction(
         truncated: matches.length > action.maxMembers,
       };
     }
+    case "createGuildRole": {
+      if (action.name.length < 1 || action.name.length > 100) {
+        throw new DiscordActionError("invalid_role_name", false);
+      }
+      const guild = await client.guilds.fetch(action.guildId);
+      const role = await guild.roles.create({
+        name: action.name,
+        permissions: [],
+        mentionable: false,
+        hoist: false,
+        reason: "KBC通知用ロール",
+      });
+      return roleResolved(role);
+    }
+    case "resolveAssignableRole": {
+      const guild = await client.guilds.fetch(action.guildId);
+      const role = await getManageableRole(guild, action.roleId, true);
+      return roleResolved(role);
+    }
+    case "addGuildMemberRole": {
+      const guild = await client.guilds.fetch(action.guildId);
+      const role = await getManageableRole(guild, action.roleId, true);
+      const member = await guild.members.fetch(action.userId);
+      await member.roles.add(role, "KBC通知設定");
+      return success(null);
+    }
+    case "removeGuildMemberRole": {
+      const guild = await client.guilds.fetch(action.guildId);
+      const role = await getManageableRole(guild, action.roleId, false);
+      const member = await guild.members.fetch(action.userId);
+      await member.roles.remove(role, "KBC通知設定");
+      return success(null);
+    }
     default:
       return assertNever(action);
   }
+}
+
+async function getManageableRole(
+  guild: Guild,
+  roleId: string,
+  requireNoPermissions: boolean,
+): Promise<Role> {
+  const role = await guild.roles.fetch(roleId);
+  if (!role || role.id === guild.id || role.managed) {
+    throw new DiscordActionError("role_unavailable", false);
+  }
+  if (!role.editable) {
+    throw new DiscordActionError("role_not_manageable", false);
+  }
+  if (requireNoPermissions && role.permissions.bitfield !== 0n) {
+    throw new DiscordActionError("role_has_permissions", false);
+  }
+  return role;
+}
+
+function roleResolved(role: Role): ActionOutcome {
+  return { status: "roleResolved", roleId: role.id, name: role.name };
 }
 
 function success(messageId: string | null): ActionOutcome {

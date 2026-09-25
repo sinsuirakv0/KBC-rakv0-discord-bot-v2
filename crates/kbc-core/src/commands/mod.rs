@@ -63,7 +63,7 @@ pub(crate) fn built_in_commands(
         .ok_or(MissingCommandContent::CommandHelp("maint"))?;
     commands.push(Box::new(MaintCommand::new(
         maint_help,
-        storage,
+        Arc::clone(&storage),
         Arc::clone(&tasks),
     )));
     let item_help = content
@@ -89,7 +89,11 @@ pub(crate) fn built_in_commands(
     let skd_help = content
         .help("skd")
         .ok_or(MissingCommandContent::CommandHelp("skd"))?;
-    commands.push(Box::new(SkdCommand::new(skd_help, Arc::clone(&http))));
+    commands.push(Box::new(SkdCommand::new(
+        skd_help,
+        Arc::clone(&http),
+        Arc::clone(&storage),
+    )));
     let tut_help = content
         .help("tut")
         .ok_or(MissingCommandContent::CommandHelp("tut"))?;

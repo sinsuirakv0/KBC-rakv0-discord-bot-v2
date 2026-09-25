@@ -14,6 +14,7 @@ use crate::action_bus::ActionBus;
 use crate::command_runtime::{CommandActionBatch, CommandRuntime};
 use crate::content::ContentCatalog;
 use crate::notification::{NotificationError, NotificationService};
+use crate::role_panel::RolePanelService;
 use crate::services::{HttpService, HttpServiceConfig, SystemClock};
 use crate::session::{DEFAULT_MAX_SESSIONS, SessionManager, SessionRegistration};
 use crate::storage::{StorageConfig, StorageService};
@@ -114,13 +115,15 @@ impl AppRuntime {
         )
         .map_err(|error| RuntimeError::CommandRegistration(error.to_string()))?;
         let notifications = Arc::new(NotificationService::new(
-            storage,
+            Arc::clone(&storage),
             http,
             action_sender.clone(),
             shutdown_receiver.clone(),
         ));
+        let role_panel = RolePanelService::new(storage);
         let worker = tokio::spawn(run_worker(
             command_runtime,
+            role_panel,
             event_receiver,
             action_sender,
             shutdown_receiver,
@@ -316,6 +319,7 @@ fn validate_range(setting: &'static str, value: u128, maximum: u128) -> Result<(
 
 async fn run_worker(
     command_runtime: CommandRuntime,
+    role_panel: RolePanelService,
     mut event_receiver: mpsc::Receiver<CoreEvent>,
     action_sender: mpsc::Sender<CoreAction>,
     mut shutdown_receiver: watch::Receiver<bool>,
@@ -359,6 +363,12 @@ async fn run_worker(
                 ));
             }
             actions
+        } else if let Some(action) = role_panel_action(&role_panel, &event).await {
+            Some(CommandActionBatch::from_data(
+                event.event_id.clone(),
+                event.request_id.clone(),
+                vec![action],
+            ))
         } else {
             handle_session_event(&mut session_manager, event, Instant::now()).await
         };
@@ -369,6 +379,51 @@ async fn run_worker(
         if !send_actions(actions, &action_sender, &mut shutdown_receiver).await {
             return;
         }
+    }
+}
+
+async fn role_panel_action(
+    role_panel: &RolePanelService,
+    event: &CoreEvent,
+) -> Option<kbc_protocol::CoreActionData> {
+    match &event.event {
+        CoreEventData::ReactionAdd {
+            guild_id,
+            channel_id,
+            message_id,
+            user_id,
+            emoji,
+        } => {
+            role_panel
+                .action_for_reaction(
+                    guild_id.as_deref(),
+                    channel_id,
+                    message_id,
+                    user_id,
+                    emoji,
+                    true,
+                )
+                .await
+        }
+        CoreEventData::ReactionRemove {
+            guild_id,
+            channel_id,
+            message_id,
+            user_id,
+            emoji,
+        } => {
+            role_panel
+                .action_for_reaction(
+                    guild_id.as_deref(),
+                    channel_id,
+                    message_id,
+                    user_id,
+                    emoji,
+                    false,
+                )
+                .await
+        }
+        _ => None,
     }
 }
 
@@ -395,6 +450,7 @@ async fn handle_session_event(
                 .handle_reaction(&channel_id, &message_id, &user_id, &emoji, now)
                 .await
         }
+        CoreEventData::ReactionRemove { .. } => None,
         CoreEventData::MessageCreate { .. } => None,
     }?;
 

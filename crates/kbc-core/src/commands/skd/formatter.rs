@@ -113,7 +113,7 @@ pub(super) fn format_added_schedules(
     output.extend(format_section("item", item_rows, now)?);
     output.extend(format_section("mission", mission_rows, now)?);
     output.extend(format_changes(data, now)?);
-    output.push(format!("**KBC**\n<{history_url}>"));
+    output.push(format!("**関連サイト**\n<{history_url}>"));
     Ok(output)
 }
 

@@ -12,6 +12,7 @@ use kbc_protocol::CoreActionData;
 
 use crate::command::{Command, CommandContext, CommandFuture, CommandMetadata, CommandOutput};
 use crate::services::HttpService;
+use crate::storage::StorageService;
 
 use data_source::{ScheduleType, SkdDataSource, SkdUpdate};
 
@@ -23,10 +24,11 @@ pub(super) struct SkdCommand {
     metadata: CommandMetadata,
     help: String,
     data_source: SkdDataSource,
+    storage: Arc<StorageService>,
 }
 
 impl SkdCommand {
-    pub(super) fn new(help: &str, http: Arc<HttpService>) -> Self {
+    pub(super) fn new(help: &str, http: Arc<HttpService>, storage: Arc<StorageService>) -> Self {
         Self {
             metadata: CommandMetadata {
                 name: "skd".to_owned(),
@@ -35,6 +37,7 @@ impl SkdCommand {
             },
             help: help.to_owned(),
             data_source: SkdDataSource::new(http),
+            storage,
         }
     }
 
@@ -58,7 +61,18 @@ impl SkdCommand {
                 return Ok(message(context.channel_id(), DATA_ERROR_MESSAGE));
             }
         };
-        format_update(context.channel_id(), update)
+        let related_urls = match self
+            .storage
+            .skd_related_urls(context.guild_id().expect("guild-only command has a guild"))
+            .await
+        {
+            Ok(urls) => urls,
+            Err(error) => {
+                eprintln!("SKD related site settings load failed: {error}");
+                Vec::new()
+            }
+        };
+        format_update(context.channel_id(), update, &related_urls)
     }
 }
 
@@ -103,6 +117,7 @@ fn parse_date(arguments: &[String]) -> Result<Option<NaiveDate>, ()> {
 fn format_update(
     channel_id: &str,
     update: SkdUpdate,
+    related_urls: &[String],
 ) -> Result<CommandOutput, crate::command::CommandExecutionError> {
     let timezone = FixedOffset::east_opt(9 * 60 * 60).expect("JST offset is valid");
     let date = update.timestamp.with_timezone(&timezone);
@@ -132,12 +147,27 @@ fn format_update(
         content: header,
     })?;
     for content in update.contents {
+        let content = with_related_sites(&content, related_urls).unwrap_or(content);
         output.push(CoreActionData::SendMessage {
             channel_id: channel_id.to_owned(),
             content,
         })?;
     }
     Ok(output)
+}
+
+pub(crate) fn with_related_sites(content: &str, urls: &[String]) -> Option<String> {
+    let body = content
+        .strip_prefix("**関連サイト**\n")
+        .or_else(|| content.strip_prefix("**KBC**\n"));
+    let Some(body) = body else {
+        return Some(content.to_owned());
+    };
+    let mut output = format!("**関連サイト**\n{body}");
+    for url in urls {
+        output.push_str(&format!("\n<{url}>"));
+    }
+    (output.encode_utf16().count() <= 2_000).then_some(output)
 }
 
 fn format_types(types: &[ScheduleType]) -> String {
@@ -153,4 +183,22 @@ fn message(channel_id: &str, content: impl Into<String>) -> CommandOutput {
         channel_id: channel_id.to_owned(),
         content: content.into(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::with_related_sites;
+
+    #[test]
+    fn appends_guild_related_sites() {
+        let content = with_related_sites(
+            "**KBC**\n<https://kbc.example/history>",
+            &["https://example.com/".to_owned()],
+        );
+
+        assert_eq!(
+            content.as_deref(),
+            Some("**関連サイト**\n<https://kbc.example/history>\n<https://example.com/>")
+        );
+    }
 }

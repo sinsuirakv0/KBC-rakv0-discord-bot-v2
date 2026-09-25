@@ -22,6 +22,9 @@ const MAINTAINERS_PATH: &str = "config/maintainers.json";
 const MAX_DOCUMENT_BYTES: usize = 256 * 1024;
 const MAX_DIRECTORY_FILES: usize = 999;
 pub(crate) const MAX_MAINTAINER_SUBJECTS: usize = 64;
+pub(crate) const MAX_NOTIFICATION_ROLES: usize = 9;
+pub(crate) const MAX_SKD_RELATED_URLS: usize = 9;
+const MAX_SKD_RELATED_URL_CHARS: usize = 1_200;
 const WRITE_INTERVAL: Duration = Duration::from_secs(1);
 const WRITE_ATTEMPTS: usize = 2;
 
@@ -69,6 +72,28 @@ pub(crate) struct Subscription {
     pub(crate) guild_id: String,
     pub(crate) channel_id: String,
     pub(crate) category: NotificationCategory,
+    #[serde(default)]
+    pub(crate) role_ids: Vec<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct NotificationRole {
+    pub(crate) role_id: String,
+    pub(crate) name: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct NotificationRolePanel {
+    pub(crate) channel_id: String,
+    pub(crate) message_id: String,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(crate) struct NotificationRoleSettings {
+    pub(crate) roles: Vec<NotificationRole>,
+    pub(crate) panel: Option<NotificationRolePanel>,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -78,6 +103,12 @@ struct GuildSettings {
     guild_id: String,
     health_maintainer_role_id: Option<String>,
     subscriptions: Vec<Subscription>,
+    #[serde(default)]
+    notification_roles: Vec<NotificationRole>,
+    #[serde(default)]
+    notification_role_panel: Option<NotificationRolePanel>,
+    #[serde(default)]
+    skd_related_urls: Vec<String>,
 }
 
 #[derive(Clone, Default, Deserialize, Serialize)]
@@ -122,23 +153,8 @@ impl StorageService {
         enabled: bool,
     ) -> Result<(), StorageError> {
         validate_subscription(&subscription)?;
-        let mut state = self.state.lock().await;
-        self.ensure_initialized(&mut state).await?;
-        let path = guild_path(&subscription.guild_id)?;
-        for attempt in 0..WRITE_ATTEMPTS {
-            let file = self.read_file(&mut state, &path).await?;
-            let mut settings = match &file {
-                Some(file) => parse_settings(&file.content)?,
-                None => GuildSettings {
-                    schema_version: 1,
-                    guild_id: subscription.guild_id.clone(),
-                    health_maintainer_role_id: None,
-                    subscriptions: Vec::new(),
-                },
-            };
-            if settings.guild_id != subscription.guild_id {
-                return Err(StorageError::new("invalid-guild-id"));
-            }
+        let guild_id = subscription.guild_id.clone();
+        self.update_guild_settings(&guild_id, |settings| {
             let exists = settings.subscriptions.iter().any(|current| {
                 current.channel_id == subscription.channel_id
                     && current.category == subscription.category
@@ -151,32 +167,12 @@ impl StorageService {
                         || current.category != subscription.category
                 });
             } else {
-                state.settings.insert(settings.guild_id.clone(), settings);
-                return Ok(());
+                return Ok(false);
             }
-            validate_settings(&settings)?;
-            let content = serde_json::to_string(&settings)
-                .map_err(|error| StorageError::detail("json-encode", error))?;
-            match self
-                .write_file(
-                    &mut state,
-                    &path,
-                    &content,
-                    file.as_ref().map(|current| current.sha.as_str()),
-                )
-                .await
-            {
-                Ok(()) => {
-                    state.settings.insert(settings.guild_id.clone(), settings);
-                    return Ok(());
-                }
-                Err(error) if error.code() == "conflict" && attempt + 1 < WRITE_ATTEMPTS => {
-                    eprintln!("Storage write conflicted; reloading the latest guild settings");
-                }
-                Err(error) => return Err(error),
-            }
-        }
-        Err(StorageError::new("conflict"))
+            Ok(true)
+        })
+        .await
+        .map(|_| ())
     }
 
     pub(crate) async fn subscriptions(&self) -> Result<Vec<Subscription>, StorageError> {
@@ -187,6 +183,206 @@ impl StorageService {
             .values()
             .flat_map(|settings| settings.subscriptions.iter().cloned())
             .collect())
+    }
+
+    pub(crate) async fn notification_role_settings(
+        &self,
+        guild_id: &str,
+    ) -> Result<NotificationRoleSettings, StorageError> {
+        if !valid_snowflake(guild_id) {
+            return Err(StorageError::new("invalid-guild-id"));
+        }
+        let mut state = self.state.lock().await;
+        self.ensure_initialized(&mut state).await?;
+        let Some(settings) = state.settings.get(guild_id) else {
+            return Ok(NotificationRoleSettings::default());
+        };
+        Ok(NotificationRoleSettings {
+            roles: settings.notification_roles.clone(),
+            panel: settings.notification_role_panel.clone(),
+        })
+    }
+
+    pub(crate) async fn set_notification_role(
+        &self,
+        guild_id: &str,
+        role: &NotificationRole,
+        enabled: bool,
+    ) -> Result<bool, StorageError> {
+        validate_notification_role(role)?;
+        self.update_guild_settings(guild_id, |settings| {
+            let position = settings
+                .notification_roles
+                .iter()
+                .position(|current| current.role_id == role.role_id);
+            if enabled {
+                if let Some(position) = position {
+                    if settings.notification_roles[position] == *role {
+                        return Ok(false);
+                    }
+                    settings.notification_roles[position] = role.clone();
+                } else {
+                    if settings.notification_roles.len() >= MAX_NOTIFICATION_ROLES {
+                        return Err(StorageError::new("notification-role-limit-reached"));
+                    }
+                    settings.notification_roles.push(role.clone());
+                }
+            } else if position.is_some() {
+                settings
+                    .notification_roles
+                    .retain(|current| current.role_id != role.role_id);
+                for subscription in &mut settings.subscriptions {
+                    subscription
+                        .role_ids
+                        .retain(|role_id| role_id != &role.role_id);
+                }
+            } else {
+                return Ok(false);
+            }
+            Ok(true)
+        })
+        .await
+    }
+
+    pub(crate) async fn set_notification_role_panel(
+        &self,
+        guild_id: &str,
+        panel: NotificationRolePanel,
+    ) -> Result<(), StorageError> {
+        validate_notification_role_panel(&panel)?;
+        self.update_guild_settings(guild_id, |settings| {
+            if settings.notification_role_panel.as_ref() == Some(&panel) {
+                return Ok(false);
+            }
+            settings.notification_role_panel = Some(panel.clone());
+            Ok(true)
+        })
+        .await
+        .map(|_| ())
+    }
+
+    pub(crate) async fn set_subscription_role(
+        &self,
+        guild_id: &str,
+        channel_id: &str,
+        category: NotificationCategory,
+        role_id: &str,
+        enabled: bool,
+    ) -> Result<bool, StorageError> {
+        if !valid_snowflake(channel_id) || !valid_snowflake(role_id) {
+            return Err(StorageError::new("invalid-subscription-role"));
+        }
+        self.update_guild_settings(guild_id, |settings| {
+            if !settings
+                .notification_roles
+                .iter()
+                .any(|role| role.role_id == role_id)
+            {
+                return Err(StorageError::new("notification-role-not-registered"));
+            }
+            let Some(subscription) = settings.subscriptions.iter_mut().find(|subscription| {
+                subscription.channel_id == channel_id && subscription.category == category
+            }) else {
+                return Err(StorageError::new("subscription-not-found"));
+            };
+            let exists = subscription
+                .role_ids
+                .iter()
+                .any(|current| current == role_id);
+            if enabled == exists {
+                return Ok(false);
+            }
+            if enabled {
+                subscription.role_ids.push(role_id.to_owned());
+            } else {
+                subscription.role_ids.retain(|current| current != role_id);
+            }
+            Ok(true)
+        })
+        .await
+    }
+
+    pub(crate) async fn notification_role_for_reaction(
+        &self,
+        guild_id: &str,
+        channel_id: &str,
+        message_id: &str,
+        index: usize,
+    ) -> Result<Option<String>, StorageError> {
+        if !valid_snowflake(guild_id)
+            || !valid_snowflake(channel_id)
+            || !valid_snowflake(message_id)
+        {
+            return Ok(None);
+        }
+        let mut state = self.state.lock().await;
+        self.ensure_initialized(&mut state).await?;
+        let Some(settings) = state.settings.get(guild_id) else {
+            return Ok(None);
+        };
+        if settings
+            .notification_role_panel
+            .as_ref()
+            .is_none_or(|panel| panel.channel_id != channel_id || panel.message_id != message_id)
+        {
+            return Ok(None);
+        }
+        Ok(settings
+            .notification_roles
+            .get(index)
+            .map(|role| role.role_id.clone()))
+    }
+
+    pub(crate) async fn set_skd_related_url(
+        &self,
+        guild_id: &str,
+        url: &str,
+        enabled: bool,
+    ) -> Result<bool, StorageError> {
+        let url = normalize_web_url(url).ok_or_else(|| StorageError::new("invalid-related-url"))?;
+        self.update_guild_settings(guild_id, |settings| {
+            let exists = settings
+                .skd_related_urls
+                .iter()
+                .any(|current| current == &url);
+            if enabled == exists {
+                return Ok(false);
+            }
+            if enabled {
+                if settings.skd_related_urls.len() >= MAX_SKD_RELATED_URLS
+                    || settings
+                        .skd_related_urls
+                        .iter()
+                        .map(|current| current.chars().count())
+                        .sum::<usize>()
+                        + url.chars().count()
+                        > MAX_SKD_RELATED_URL_CHARS
+                {
+                    return Err(StorageError::new("related-url-limit-reached"));
+                }
+                settings.skd_related_urls.push(url.clone());
+            } else {
+                settings.skd_related_urls.retain(|current| current != &url);
+            }
+            Ok(true)
+        })
+        .await
+    }
+
+    pub(crate) async fn skd_related_urls(
+        &self,
+        guild_id: &str,
+    ) -> Result<Vec<String>, StorageError> {
+        if !valid_snowflake(guild_id) {
+            return Err(StorageError::new("invalid-guild-id"));
+        }
+        let mut state = self.state.lock().await;
+        self.ensure_initialized(&mut state).await?;
+        Ok(state
+            .settings
+            .get(guild_id)
+            .map(|settings| settings.skd_related_urls.clone())
+            .unwrap_or_default())
     }
 
     pub(crate) async fn set_maintainer(
@@ -316,6 +512,58 @@ impl StorageService {
             .await?;
         }
         Ok(value)
+    }
+
+    async fn update_guild_settings<F>(
+        &self,
+        guild_id: &str,
+        change: F,
+    ) -> Result<bool, StorageError>
+    where
+        F: Fn(&mut GuildSettings) -> Result<bool, StorageError>,
+    {
+        if !valid_snowflake(guild_id) {
+            return Err(StorageError::new("invalid-guild-id"));
+        }
+        let mut state = self.state.lock().await;
+        self.ensure_initialized(&mut state).await?;
+        let path = guild_path(guild_id)?;
+        for attempt in 0..WRITE_ATTEMPTS {
+            let file = self.read_file(&mut state, &path).await?;
+            let mut settings = match &file {
+                Some(file) => parse_settings(&file.content)?,
+                None => new_guild_settings(guild_id),
+            };
+            if settings.guild_id != guild_id {
+                return Err(StorageError::new("invalid-guild-id"));
+            }
+            if !change(&mut settings)? {
+                state.settings.insert(settings.guild_id.clone(), settings);
+                return Ok(false);
+            }
+            validate_settings(&settings)?;
+            let content = serde_json::to_string(&settings)
+                .map_err(|error| StorageError::detail("json-encode", error))?;
+            match self
+                .write_file(
+                    &mut state,
+                    &path,
+                    &content,
+                    file.as_ref().map(|current| current.sha.as_str()),
+                )
+                .await
+            {
+                Ok(()) => {
+                    state.settings.insert(settings.guild_id.clone(), settings);
+                    return Ok(true);
+                }
+                Err(error) if error.code() == "conflict" && attempt + 1 < WRITE_ATTEMPTS => {
+                    eprintln!("Storage write conflicted; reloading the latest guild settings");
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        Err(StorageError::new("conflict"))
     }
 
     async fn ensure_initialized(&self, state: &mut StorageState) -> Result<(), StorageError> {
@@ -616,6 +864,18 @@ fn parse_settings(content: &str) -> Result<GuildSettings, StorageError> {
     Ok(settings)
 }
 
+fn new_guild_settings(guild_id: &str) -> GuildSettings {
+    GuildSettings {
+        schema_version: 1,
+        guild_id: guild_id.to_owned(),
+        health_maintainer_role_id: None,
+        subscriptions: Vec::new(),
+        notification_roles: Vec::new(),
+        notification_role_panel: None,
+        skd_related_urls: Vec::new(),
+    }
+}
+
 fn parse_maintainers(content: &str) -> Result<MaintainerSettings, StorageError> {
     let settings: MaintainerSettings = serde_json::from_str(content.trim_start_matches('\u{feff}'))
         .map_err(|error| StorageError::detail("invalid-maintainer-settings", error))?;
@@ -651,12 +911,59 @@ fn validate_settings(settings: &GuildSettings) -> Result<(), StorageError> {
             .subscriptions
             .iter()
             .any(|subscription| subscription.guild_id != settings.guild_id)
+        || settings.notification_roles.len() > MAX_NOTIFICATION_ROLES
+        || settings
+            .notification_roles
+            .iter()
+            .any(|role| validate_notification_role(role).is_err())
+        || settings
+            .notification_role_panel
+            .as_ref()
+            .is_some_and(|panel| validate_notification_role_panel(panel).is_err())
+        || settings.skd_related_urls.len() > MAX_SKD_RELATED_URLS
+        || settings
+            .skd_related_urls
+            .iter()
+            .any(|url| normalize_web_url(url).as_deref() != Some(url.as_str()))
+        || settings
+            .skd_related_urls
+            .iter()
+            .map(|url| url.chars().count())
+            .sum::<usize>()
+            > MAX_SKD_RELATED_URL_CHARS
     {
         return Err(StorageError::new("invalid-guild-settings"));
+    }
+    let configured_roles = settings
+        .notification_roles
+        .iter()
+        .map(|role| role.role_id.as_str())
+        .collect::<HashSet<_>>();
+    if configured_roles.len() != settings.notification_roles.len() {
+        return Err(StorageError::new("duplicate-notification-role"));
+    }
+    if settings
+        .skd_related_urls
+        .iter()
+        .collect::<HashSet<_>>()
+        .len()
+        != settings.skd_related_urls.len()
+    {
+        return Err(StorageError::new("duplicate-related-url"));
     }
     let mut unique = HashSet::new();
     for subscription in &settings.subscriptions {
         validate_subscription(subscription)?;
+        if subscription.role_ids.len() > MAX_NOTIFICATION_ROLES
+            || subscription
+                .role_ids
+                .iter()
+                .any(|role_id| !configured_roles.contains(role_id.as_str()))
+            || subscription.role_ids.iter().collect::<HashSet<_>>().len()
+                != subscription.role_ids.len()
+        {
+            return Err(StorageError::new("invalid-subscription-role"));
+        }
         if !unique.insert((subscription.channel_id.clone(), subscription.category)) {
             return Err(StorageError::new("duplicate-subscription"));
         }
@@ -665,10 +972,43 @@ fn validate_settings(settings: &GuildSettings) -> Result<(), StorageError> {
 }
 
 fn validate_subscription(subscription: &Subscription) -> Result<(), StorageError> {
-    if !valid_snowflake(&subscription.guild_id) || !valid_snowflake(&subscription.channel_id) {
+    if !valid_snowflake(&subscription.guild_id)
+        || !valid_snowflake(&subscription.channel_id)
+        || subscription
+            .role_ids
+            .iter()
+            .any(|role_id| !valid_snowflake(role_id))
+    {
         return Err(StorageError::new("invalid-subscription"));
     }
     Ok(())
+}
+
+fn validate_notification_role(role: &NotificationRole) -> Result<(), StorageError> {
+    if !valid_snowflake(&role.role_id)
+        || role.name.is_empty()
+        || role.name.chars().count() > 100
+        || role.name.chars().any(char::is_control)
+    {
+        return Err(StorageError::new("invalid-notification-role"));
+    }
+    Ok(())
+}
+
+fn validate_notification_role_panel(panel: &NotificationRolePanel) -> Result<(), StorageError> {
+    if !valid_snowflake(&panel.channel_id) || !valid_snowflake(&panel.message_id) {
+        return Err(StorageError::new("invalid-notification-role-panel"));
+    }
+    Ok(())
+}
+
+fn normalize_web_url(value: &str) -> Option<String> {
+    let url = reqwest::Url::parse(value).ok()?;
+    (["http", "https"].contains(&url.scheme())
+        && url.host_str().is_some()
+        && url.username().is_empty()
+        && url.password().is_none())
+    .then(|| url.to_string())
 }
 
 fn guild_path(guild_id: &str) -> Result<String, StorageError> {

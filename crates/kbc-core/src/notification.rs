@@ -17,6 +17,7 @@ use tokio::sync::{Mutex, Semaphore, mpsc, oneshot, watch};
 use tokio::time::timeout;
 
 use crate::commands::skd::data_source::{ScheduleType, SkdDataSource};
+use crate::commands::skd::with_related_sites;
 use crate::services::HttpService;
 use crate::storage::{NotificationCategory, StorageError, StorageService, Subscription};
 
@@ -316,8 +317,24 @@ impl NotificationService {
         let mut failed = false;
         let mut reconciliation = false;
         for channel_id in &channels {
+            let role_ids = subscriptions
+                .iter()
+                .find(|subscription| {
+                    subscription.category == record.event.category
+                        && subscription.channel_id == *channel_id
+                })
+                .map(|subscription| subscription.role_ids.as_slice())
+                .unwrap_or_default();
+            let channel_initial_content = with_role_mentions(&initial_content, role_ids);
+            let channel_content = with_role_mentions(&content, role_ids);
             match self
-                .deliver_primary(&event_id, channel_id, &initial_content, &content)
+                .deliver_primary(
+                    &event_id,
+                    channel_id,
+                    &channel_initial_content,
+                    &channel_content,
+                    role_ids,
+                )
                 .await
             {
                 Ok(()) => {}
@@ -335,6 +352,22 @@ impl NotificationService {
                 }
             };
             for channel_id in &channels {
+                let related_urls = match subscriptions.iter().find(|subscription| {
+                    subscription.category == record.event.category
+                        && subscription.channel_id == *channel_id
+                }) {
+                    Some(subscription) => {
+                        match self.storage.skd_related_urls(&subscription.guild_id).await {
+                            Ok(urls) => urls,
+                            Err(error) => {
+                                eprintln!("Related site settings load failed: {error}");
+                                failed = true;
+                                continue;
+                            }
+                        }
+                    }
+                    None => Vec::new(),
+                };
                 let can_send_details = self
                     .load_record(&event_id)
                     .await
@@ -345,8 +378,13 @@ impl NotificationService {
                     continue;
                 }
                 for (index, detail) in details.iter().enumerate() {
+                    let Some(detail) = with_related_sites(detail, &related_urls) else {
+                        eprintln!("Related site message exceeded the Discord content limit");
+                        failed = true;
+                        continue;
+                    };
                     match self
-                        .deliver_follow_up(&event_id, channel_id, index, detail)
+                        .deliver_follow_up(&event_id, channel_id, index, &detail)
                         .await
                     {
                         Ok(()) => {}
@@ -371,6 +409,7 @@ impl NotificationService {
         channel_id: &str,
         initial_content: &str,
         final_content: &str,
+        allowed_role_ids: &[String],
     ) -> Result<(), DeliveryFailure> {
         let record = self.load_record(event_id).await?;
         let mut delivery = find_delivery(&record, channel_id)?.clone();
@@ -400,6 +439,7 @@ impl NotificationService {
                         channel_id: channel_id.to_owned(),
                         content: initial_content.to_owned(),
                         nonce,
+                        allowed_role_ids: allowed_role_ids.to_vec(),
                     },
                 )
                 .await
@@ -554,6 +594,7 @@ impl NotificationService {
                     channel_id: channel_id.to_owned(),
                     content: content.to_owned(),
                     nonce,
+                    allowed_role_ids: Vec::new(),
                 },
             )
             .await
@@ -770,6 +811,20 @@ fn format_detection(
         ));
     }
     Ok(lines.join("\n"))
+}
+
+fn with_role_mentions(content: &str, role_ids: &[String]) -> String {
+    if role_ids.is_empty() {
+        return content.to_owned();
+    }
+    format!(
+        "{}\n{content}",
+        role_ids
+            .iter()
+            .map(|role_id| format!("<@&{role_id}>"))
+            .collect::<Vec<_>>()
+            .join(" ")
+    )
 }
 
 fn successful_message_id(outcome: ActionOutcome) -> Option<String> {
