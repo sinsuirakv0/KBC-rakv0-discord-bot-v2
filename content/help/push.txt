@@ -2,6 +2,8 @@
 
 o.push skd      スケジュール(gatya・sale・item)の通知を登録
 o.push ad notice  ad　popup_noticeの通知を登録
+o.push update android  Google Play版のバージョン更新通知を登録
+o.push update ios      App Store版のバージョン更新通知を登録
 
 実行したチャンネルが通知先になります。
 解除は末尾に off を付けます（例: o.push skd off）。
@@ -10,6 +12,10 @@ o.push ad notice  ad　popup_noticeの通知を登録
 
 o.push skd role:<ロールID>      追加
 o.push skd role:<ロールID> del  削除
+o.push update android role:<ロールID>      Android通知へ追加
+o.push update android role:<ロールID> del  Android通知から削除
+o.push update ios role:<ロールID>          iOS通知へ追加
+o.push update ios role:<ロールID> del      iOS通知から削除
 
 先に通知先と o.maint pushsetting <ロールID> add の両方を登録してください。
 複数の通知ロールを設定できます。ロール設定だけでは通知先を自動登録しません。

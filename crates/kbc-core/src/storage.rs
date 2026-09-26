@@ -16,9 +16,11 @@ use tokio::time::{Instant, sleep};
 
 use crate::notification::EventRecord;
 use crate::services::HttpService;
+use crate::store_update::{StorePlatform, valid_version};
 
 const MANIFEST_PATH: &str = "meta.json";
 const MAINTAINERS_PATH: &str = "config/maintainers.json";
+const STORE_VERSIONS_PATH: &str = "state/store-versions.json";
 const MAX_DOCUMENT_BYTES: usize = 256 * 1024;
 const MAX_DIRECTORY_FILES: usize = 999;
 pub(crate) const MAX_MAINTAINER_SUBJECTS: usize = 64;
@@ -49,11 +51,13 @@ impl Debug for StorageConfig {
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
-#[serde(rename_all = "lowercase")]
+#[serde(rename_all = "camelCase")]
 pub(crate) enum NotificationCategory {
     Skd,
     Ad,
     Notice,
+    UpdateAndroid,
+    UpdateIos,
 }
 
 impl NotificationCategory {
@@ -62,6 +66,8 @@ impl NotificationCategory {
             Self::Skd => "skd",
             Self::Ad => "ad",
             Self::Notice => "notice",
+            Self::UpdateAndroid => "update android",
+            Self::UpdateIos => "update ios",
         }
     }
 }
@@ -118,6 +124,40 @@ struct MaintainerSettings {
     subject_ids: Vec<String>,
 }
 
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct StoreVersionState {
+    schema_version: u8,
+    google_play: Option<String>,
+    app_store: Option<String>,
+}
+
+impl Default for StoreVersionState {
+    fn default() -> Self {
+        Self {
+            schema_version: 1,
+            google_play: None,
+            app_store: None,
+        }
+    }
+}
+
+impl StoreVersionState {
+    fn version(&self, platform: StorePlatform) -> Option<&str> {
+        match platform {
+            StorePlatform::Android => self.google_play.as_deref(),
+            StorePlatform::Ios => self.app_store.as_deref(),
+        }
+    }
+
+    fn set_version(&mut self, platform: StorePlatform, version: String) {
+        match platform {
+            StorePlatform::Android => self.google_play = Some(version),
+            StorePlatform::Ios => self.app_store = Some(version),
+        }
+    }
+}
+
 struct RepositoryFile {
     content: String,
     sha: String,
@@ -128,6 +168,7 @@ struct StorageState {
     initialized: bool,
     settings: HashMap<String, GuildSettings>,
     maintainers: MaintainerSettings,
+    store_versions: StoreVersionState,
     last_write_at: Option<Instant>,
     cooldown_until: Option<Instant>,
 }
@@ -183,6 +224,61 @@ impl StorageService {
             .values()
             .flat_map(|settings| settings.subscriptions.iter().cloned())
             .collect())
+    }
+
+    pub(crate) async fn store_version(
+        &self,
+        platform: StorePlatform,
+    ) -> Result<Option<String>, StorageError> {
+        let mut state = self.state.lock().await;
+        self.ensure_initialized(&mut state).await?;
+        Ok(state.store_versions.version(platform).map(str::to_owned))
+    }
+
+    pub(crate) async fn set_store_version(
+        &self,
+        platform: StorePlatform,
+        version: &str,
+    ) -> Result<(), StorageError> {
+        if !valid_version(version) {
+            return Err(StorageError::new("invalid-store-version"));
+        }
+        let mut state = self.state.lock().await;
+        self.ensure_initialized(&mut state).await?;
+        for attempt in 0..WRITE_ATTEMPTS {
+            let file = self.read_file(&mut state, STORE_VERSIONS_PATH).await?;
+            let mut versions = match &file {
+                Some(file) => parse_store_versions(&file.content)?,
+                None => StoreVersionState::default(),
+            };
+            if versions.version(platform) == Some(version) {
+                state.store_versions = versions;
+                return Ok(());
+            }
+            versions.set_version(platform, version.to_owned());
+            validate_store_versions(&versions)?;
+            let content = serde_json::to_string(&versions)
+                .map_err(|error| StorageError::detail("json-encode", error))?;
+            match self
+                .write_file(
+                    &mut state,
+                    STORE_VERSIONS_PATH,
+                    &content,
+                    file.as_ref().map(|current| current.sha.as_str()),
+                )
+                .await
+            {
+                Ok(()) => {
+                    state.store_versions = versions;
+                    return Ok(());
+                }
+                Err(error) if error.code() == "conflict" && attempt + 1 < WRITE_ATTEMPTS => {
+                    eprintln!("Store version write conflicted; reloading the latest state");
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        Err(StorageError::new("conflict"))
     }
 
     pub(crate) async fn notification_role_settings(
@@ -601,8 +697,13 @@ impl StorageService {
                 subject_ids: Vec::new(),
             },
         };
+        let store_versions = match self.read_file(state, STORE_VERSIONS_PATH).await? {
+            Some(file) => parse_store_versions(&file.content)?,
+            None => StoreVersionState::default(),
+        };
         state.settings = settings;
         state.maintainers = maintainers;
+        state.store_versions = store_versions;
         state.initialized = true;
         Ok(())
     }
@@ -881,6 +982,29 @@ fn parse_maintainers(content: &str) -> Result<MaintainerSettings, StorageError> 
         .map_err(|error| StorageError::detail("invalid-maintainer-settings", error))?;
     validate_maintainers(&settings)?;
     Ok(settings)
+}
+
+fn parse_store_versions(content: &str) -> Result<StoreVersionState, StorageError> {
+    let versions: StoreVersionState = serde_json::from_str(content.trim_start_matches('\u{feff}'))
+        .map_err(|error| StorageError::detail("invalid-store-versions", error))?;
+    validate_store_versions(&versions)?;
+    Ok(versions)
+}
+
+fn validate_store_versions(versions: &StoreVersionState) -> Result<(), StorageError> {
+    if versions.schema_version != 1
+        || versions
+            .google_play
+            .as_deref()
+            .is_some_and(|value| !valid_version(value))
+        || versions
+            .app_store
+            .as_deref()
+            .is_some_and(|value| !valid_version(value))
+    {
+        return Err(StorageError::new("invalid-store-versions"));
+    }
+    Ok(())
 }
 
 fn validate_maintainers(settings: &MaintainerSettings) -> Result<(), StorageError> {

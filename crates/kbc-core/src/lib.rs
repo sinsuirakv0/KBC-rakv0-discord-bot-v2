@@ -13,6 +13,7 @@ mod runtime;
 mod services;
 mod session;
 mod storage;
+mod store_update;
 mod task_runtime;
 
 pub use notification::NotificationError;

@@ -211,6 +211,10 @@ impl AppRuntime {
                 .await
                 .map_err(|error| RuntimeError::WorkerJoin(error.to_string()))?;
         }
+        self.notifications
+            .shutdown()
+            .await
+            .map_err(|error| RuntimeError::NotificationWorkerJoin(error.to_string()))?;
         self.tasks.shutdown().await?;
 
         Ok(())
@@ -241,6 +245,7 @@ pub enum RuntimeError {
     EventQueueClosed,
     ActionQueueClosed,
     WorkerJoin(String),
+    NotificationWorkerJoin(String),
     TaskWorkerJoin(String),
 }
 
@@ -273,6 +278,9 @@ impl Display for RuntimeError {
             Self::EventQueueClosed => formatter.write_str("event queue is closed"),
             Self::ActionQueueClosed => formatter.write_str("action queue is closed"),
             Self::WorkerJoin(reason) => write!(formatter, "runtime worker failed: {reason}"),
+            Self::NotificationWorkerJoin(reason) => {
+                write!(formatter, "notification worker failed: {reason}")
+            }
             Self::TaskWorkerJoin(reason) => write!(formatter, "task worker failed: {reason}"),
         }
     }

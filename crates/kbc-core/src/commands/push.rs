@@ -8,7 +8,7 @@ use crate::command::{Command, CommandContext, CommandFuture, CommandMetadata, Co
 use crate::permissions::has_maintainer_access;
 use crate::storage::{MAX_SKD_RELATED_URLS, NotificationCategory, StorageService, Subscription};
 
-const USAGE_MESSAGE: &str = "使い方: o.push skd|ad|notice [off] / o.push skd|ad|notice role:<ロールID> [del] / o.push skd url <URL> add|del";
+const USAGE_MESSAGE: &str = "使い方: o.push skd|ad|notice [off] / o.push skd|ad|notice role:<ロールID> [del] / o.push update android|ios [off] / o.push update android|ios role:<ロールID> [del] / o.push skd url <URL> add|del";
 const PERMISSION_MESSAGE: &str = "通知先の変更にはBot管理者・Botメンテナー権限が必要です。";
 
 pub(super) struct PushCommand {
@@ -189,6 +189,14 @@ fn parse_request(arguments: &[String]) -> Option<PushRequest> {
     if arguments.is_empty() || arguments.len() > 4 {
         return None;
     }
+    if arguments[0].eq_ignore_ascii_case("update") {
+        let category = match arguments.get(1)?.to_ascii_lowercase().as_str() {
+            "android" => NotificationCategory::UpdateAndroid,
+            "ios" => NotificationCategory::UpdateIos,
+            _ => return None,
+        };
+        return parse_category_request(category, &arguments[2..]);
+    }
     let category = match arguments[0].to_ascii_lowercase().as_str() {
         "skd" => NotificationCategory::Skd,
         "ad" => NotificationCategory::Ad,
@@ -211,12 +219,19 @@ fn parse_request(arguments: &[String]) -> Option<PushRequest> {
             enabled,
         });
     }
+    parse_category_request(category, &arguments[1..])
+}
+
+fn parse_category_request(
+    category: NotificationCategory,
+    arguments: &[String],
+) -> Option<PushRequest> {
     if let Some(role_id) = arguments
-        .get(1)
+        .first()
         .and_then(|value| value.strip_prefix("role:"))
         .and_then(normalize_role_id)
     {
-        let enabled = match arguments.get(2) {
+        let enabled = match arguments.get(1) {
             None => true,
             Some(value) if value.eq_ignore_ascii_case("del") => false,
             Some(_) => return None,
@@ -227,9 +242,9 @@ fn parse_request(arguments: &[String]) -> Option<PushRequest> {
             enabled,
         });
     }
-    let enabled = match arguments.get(1) {
+    let enabled = match arguments.first() {
         None => true,
-        Some(value) if value.eq_ignore_ascii_case("off") && arguments.len() == 2 => false,
+        Some(value) if value.eq_ignore_ascii_case("off") && arguments.len() == 1 => false,
         Some(_) => return None,
     };
     Some(PushRequest::Subscription { category, enabled })
@@ -251,4 +266,38 @@ fn message(channel_id: &str, content: impl Into<String>) -> CommandOutput {
         channel_id: channel_id.to_owned(),
         content: content.into(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{PushRequest, parse_request};
+    use crate::storage::NotificationCategory;
+
+    fn arguments(values: &[&str]) -> Vec<String> {
+        values.iter().map(|value| (*value).to_owned()).collect()
+    }
+
+    #[test]
+    fn parses_platform_specific_update_settings() {
+        assert!(matches!(
+            parse_request(&arguments(&["update", "android"])),
+            Some(PushRequest::Subscription {
+                category: NotificationCategory::UpdateAndroid,
+                enabled: true
+            })
+        ));
+        assert!(matches!(
+            parse_request(&arguments(&[
+                "update",
+                "ios",
+                "role:12345678901234567",
+                "del"
+            ])),
+            Some(PushRequest::Role {
+                category: NotificationCategory::UpdateIos,
+                enabled: false,
+                ..
+            })
+        ));
+    }
 }

@@ -1,5 +1,6 @@
 ﻿//! 外部更新を永続化し、Discord Actionの結果まで追跡する通知Runtime。
 
+use std::cmp::Ordering as CmpOrdering;
 use std::collections::{HashMap, HashSet};
 use std::fmt::{Display, Formatter};
 use std::sync::Arc;
@@ -14,16 +15,24 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use tokio::sync::{Mutex, Semaphore, mpsc, oneshot, watch};
-use tokio::time::timeout;
+use tokio::task::JoinHandle;
+use tokio::time::{sleep, timeout};
 
 use crate::commands::skd::data_source::{ScheduleType, SkdDataSource};
 use crate::commands::skd::with_related_sites;
 use crate::services::HttpService;
 use crate::storage::{NotificationCategory, StorageError, StorageService, Subscription};
+use crate::store_update::{StorePlatform, StoreVersionSource, compare_versions, valid_version};
 
 const MAX_CONCURRENT_REQUESTS: usize = 4;
 const MAX_DETAIL_MESSAGES: usize = 128;
 const ACTION_TIMEOUT: Duration = Duration::from_secs(30);
+const STORE_POLL_INTERVAL: Duration = Duration::from_secs(5);
+const STORE_ERROR_BACKOFF: [Duration; 3] = [
+    Duration::from_secs(15),
+    Duration::from_secs(60),
+    Duration::from_secs(300),
+];
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -50,6 +59,13 @@ struct ScheduleSource {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
+struct StoreUpdate {
+    previous_version: String,
+    version: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct DetectionEvent {
     version: u8,
     pub(crate) event_id: String,
@@ -58,9 +74,35 @@ pub(crate) struct DetectionEvent {
     detected_at: String,
     types: Vec<ScheduleType>,
     source: Option<ScheduleSource>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    store_update: Option<StoreUpdate>,
 }
 
 impl DetectionEvent {
+    fn store_update(platform: StorePlatform, previous_version: &str, version: &str) -> Self {
+        let category = match platform {
+            StorePlatform::Android => NotificationCategory::UpdateAndroid,
+            StorePlatform::Ios => NotificationCategory::UpdateIos,
+        };
+        Self {
+            version: 1,
+            event_id: format!(
+                "store-version:{}:{}",
+                platform.key(),
+                version.replace('.', "_")
+            ),
+            category,
+            phase: DetectionPhase::Detected,
+            detected_at: Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true),
+            types: Vec::new(),
+            source: None,
+            store_update: Some(StoreUpdate {
+                previous_version: previous_version.to_owned(),
+                version: version.to_owned(),
+            }),
+        }
+    }
+
     fn parse(value: Value) -> Result<Self, NotificationError> {
         let mut event: Self =
             serde_json::from_value(value).map_err(|_| NotificationError::new("invalid-event"))?;
@@ -87,6 +129,28 @@ impl DetectionEvent {
             || self.types.iter().collect::<HashSet<_>>().len() != self.types.len()
         {
             return Err(StorageError::new("invalid-event-types"));
+        }
+        if matches!(
+            self.category,
+            NotificationCategory::UpdateAndroid | NotificationCategory::UpdateIos
+        ) {
+            let Some(update) = &self.store_update else {
+                return Err(StorageError::new("missing-store-update"));
+            };
+            if self.phase != DetectionPhase::Detected
+                || !self.types.is_empty()
+                || self.source.is_some()
+                || !valid_version(&update.previous_version)
+                || !valid_version(&update.version)
+                || compare_versions(&update.version, &update.previous_version)
+                    != Some(CmpOrdering::Greater)
+            {
+                return Err(StorageError::new("invalid-store-update"));
+            }
+            return Ok(());
+        }
+        if self.store_update.is_some() {
+            return Err(StorageError::new("unexpected-store-update"));
         }
         if self.category != NotificationCategory::Skd {
             if self.phase != DetectionPhase::Detected
@@ -226,6 +290,7 @@ impl EventRecord {
 
 pub(crate) struct NotificationService {
     storage: Arc<StorageService>,
+    http: Arc<HttpService>,
     skd: SkdDataSource,
     action_sender: mpsc::Sender<CoreAction>,
     waiters: Mutex<HashMap<ActionId, oneshot::Sender<ActionOutcome>>>,
@@ -233,6 +298,7 @@ pub(crate) struct NotificationService {
     delivery_lock: Mutex<()>,
     action_sequence: AtomicU64,
     shutdown_receiver: watch::Receiver<bool>,
+    store_monitor: Mutex<Option<JoinHandle<()>>>,
 }
 
 impl NotificationService {
@@ -244,6 +310,7 @@ impl NotificationService {
     ) -> Self {
         Self {
             storage,
+            http: Arc::clone(&http),
             skd: SkdDataSource::new(http),
             action_sender,
             waiters: Mutex::new(HashMap::new()),
@@ -251,14 +318,33 @@ impl NotificationService {
             delivery_lock: Mutex::new(()),
             action_sequence: AtomicU64::new(1),
             shutdown_receiver,
+            store_monitor: Mutex::new(None),
         }
     }
 
-    pub(crate) async fn prepare(&self) -> Result<(), NotificationError> {
+    pub(crate) async fn prepare(self: &Arc<Self>) -> Result<(), NotificationError> {
         self.storage
             .initialize()
             .await
-            .map_err(|error| NotificationError::detail("unavailable", error))
+            .map_err(|error| NotificationError::detail("unavailable", error))?;
+        let mut monitor = self.store_monitor.lock().await;
+        if monitor.is_none() {
+            let service = Arc::clone(self);
+            *monitor = Some(tokio::spawn(async move {
+                service.run_store_monitors().await;
+            }));
+        }
+        Ok(())
+    }
+
+    pub(crate) async fn shutdown(&self) -> Result<(), NotificationError> {
+        let monitor = self.store_monitor.lock().await.take();
+        if let Some(monitor) = monitor {
+            monitor
+                .await
+                .map_err(|error| NotificationError::detail("worker-join", error))?;
+        }
+        Ok(())
     }
 
     pub(crate) async fn submit(&self, value: Value) -> Result<(), NotificationError> {
@@ -285,6 +371,112 @@ impl NotificationService {
         } else {
             false
         }
+    }
+
+    async fn run_store_monitors(&self) {
+        tokio::join!(
+            self.run_store_monitor(StorePlatform::Android),
+            self.run_store_monitor(StorePlatform::Ios)
+        );
+    }
+
+    async fn run_store_monitor(&self, platform: StorePlatform) {
+        let mut source = StoreVersionSource::new(platform, Arc::clone(&self.http));
+        let mut failures = 0_usize;
+        loop {
+            if *self.shutdown_receiver.borrow() {
+                return;
+            }
+            let delay = match self.poll_store_version(platform, &mut source).await {
+                Ok(()) => {
+                    failures = 0;
+                    STORE_POLL_INTERVAL
+                }
+                Err(error) => {
+                    eprintln!("{} version monitor failed: {error}", platform.label());
+                    let delay = STORE_ERROR_BACKOFF
+                        [failures.min(STORE_ERROR_BACKOFF.len().saturating_sub(1))];
+                    failures = failures.saturating_add(1);
+                    delay
+                }
+            };
+            let mut shutdown = self.shutdown_receiver.clone();
+            tokio::select! {
+                _ = sleep(delay) => {}
+                _ = wait_for_shutdown(&mut shutdown) => return,
+            }
+        }
+    }
+
+    async fn poll_store_version(
+        &self,
+        platform: StorePlatform,
+        source: &mut StoreVersionSource,
+    ) -> Result<(), NotificationError> {
+        let category = match platform {
+            StorePlatform::Android => NotificationCategory::UpdateAndroid,
+            StorePlatform::Ios => NotificationCategory::UpdateIos,
+        };
+        let subscriptions = self
+            .storage
+            .subscriptions()
+            .await
+            .map_err(storage_failure)?;
+        if !subscriptions
+            .iter()
+            .any(|subscription| subscription.category == category)
+        {
+            return Ok(());
+        }
+        let version = source
+            .fetch()
+            .await
+            .map_err(|error| NotificationError::detail("store-request", error))?;
+        let Some(previous_version) = self
+            .storage
+            .store_version(platform)
+            .await
+            .map_err(storage_failure)?
+        else {
+            self.storage
+                .set_store_version(platform, &version)
+                .await
+                .map_err(storage_failure)?;
+            eprintln!(
+                "{} version baseline initialized: {version}",
+                platform.label()
+            );
+            return Ok(());
+        };
+        match compare_versions(&version, &previous_version) {
+            Some(CmpOrdering::Equal) => return Ok(()),
+            Some(CmpOrdering::Less) | None => {
+                return Err(NotificationError::new("store-version-regressed"));
+            }
+            Some(CmpOrdering::Greater) => {}
+        }
+        let confirmed_version = source
+            .fetch()
+            .await
+            .map_err(|error| NotificationError::detail("store-confirmation", error))?;
+        if confirmed_version != version {
+            return Err(NotificationError::new("store-version-unconfirmed"));
+        }
+        let event = DetectionEvent::store_update(platform, &previous_version, &version);
+        let _delivery = self.delivery_lock.lock().await;
+        if *self.shutdown_receiver.borrow() {
+            return Err(NotificationError::new("unavailable"));
+        }
+        self.deliver(event).await?;
+        self.storage
+            .set_store_version(platform, &version)
+            .await
+            .map_err(storage_failure)?;
+        eprintln!(
+            "{} version update delivered: {previous_version} -> {version}",
+            platform.label()
+        );
+        Ok(())
     }
 
     async fn deliver(&self, event: DetectionEvent) -> Result<(), NotificationError> {
@@ -633,17 +825,19 @@ impl NotificationService {
         let request_id = RequestId::new(format!("notification:{event_id}"));
         let (sender, receiver) = oneshot::channel();
         self.waiters.lock().await.insert(action_id.clone(), sender);
-        if self
-            .action_sender
-            .send(CoreAction {
+        let mut shutdown = self.shutdown_receiver.clone();
+        let sent = tokio::select! {
+            biased;
+            _ = wait_for_shutdown(&mut shutdown) => false,
+            result = self.action_sender.send(CoreAction {
                 protocol_version: PROTOCOL_VERSION,
                 action_id: action_id.clone(),
                 request_id,
                 action,
             })
-            .await
-            .is_err()
-        {
+            => result.is_ok(),
+        };
+        if !sent {
             self.waiters.lock().await.remove(&action_id);
             return Err(NotificationError::new("unavailable"));
         }
@@ -679,6 +873,9 @@ fn merge_event(
     };
     if record.event.category != event.category {
         return Err(StorageError::new("event-category-mismatch"));
+    }
+    if record.event.store_update != event.store_update {
+        return Err(StorageError::new("store-update-mismatch"));
     }
     if let Some(source) = event.source {
         if record
@@ -786,6 +983,9 @@ fn format_detection(
         NotificationCategory::Skd => "**スケジュール更新**",
         NotificationCategory::Ad => "adの更新を検知",
         NotificationCategory::Notice => "popup_noticeの更新を検知",
+        NotificationCategory::UpdateAndroid | NotificationCategory::UpdateIos => {
+            "**にゃんこ大戦争 アップデート**"
+        }
     };
     let mut lines = vec![
         title.to_owned(),
@@ -799,6 +999,22 @@ fn format_detection(
             date.second()
         ),
     ];
+    if let Some(update) = &event.store_update {
+        let platform = match event.category {
+            NotificationCategory::UpdateAndroid => StorePlatform::Android,
+            NotificationCategory::UpdateIos => StorePlatform::Ios,
+            _ => return Err(NotificationError::new("invalid-event")),
+        };
+        lines.insert(1, format!("対象: {}", platform.label()));
+        lines.insert(
+            2,
+            format!(
+                "バージョン: `{}` → `{}`",
+                update.previous_version, update.version
+            ),
+        );
+        lines.push(platform.store_url().to_owned());
+    }
     if event.category == NotificationCategory::Skd && include_types && !event.types.is_empty() {
         lines.push(format!(
             "種類: {}",
