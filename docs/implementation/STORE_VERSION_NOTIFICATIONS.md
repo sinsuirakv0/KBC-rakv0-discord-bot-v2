@@ -33,6 +33,19 @@ Rust Coreの`NotificationService`がAndroidとiOSの監視Loopを1本ずつ所�
 
 更新時は既存Notification Runtimeを利用し、Event Record、送信前の`attempting`、Discord Action結果、`sent`を保存する。通知が成功してからだけ基準Versionを進めるため、送信失敗時は次回照会で同じ冪等Eventを再処理できる。`attempting`の結果が不明な場合は既存仕様どおり自動再投稿せず、調停を要求する。
 
+通知本文は次の形式とする。Androidでは2行目の`ios`を`android`へ、`App Store`とURLを`Google Play`とGoogle Play URLへ置き換える。KBC差分URLの`version`と`compare`は各Versionを`15.7.0 → 150700`の形式へ変換する。
+
+```text
+NEW Version
+ios Ver.15.7.0
+検知時刻: 2026/09/26(土) 12:34:56
+KBC
+https://kbc-rakv0.vercel.app/pages/asset-explorer/?dataset=Local&version=150700&compare=150600&view=diff&layout=grid&offset=200
+App Store
+https://apps.apple.com/jp/app/id547145938
+※反映まで少し時間がかかります
+```
+
 ## 既知の境界
 
 Google Playには他社Appの公開Versionを取得する公式APIがないため、公開Pageが利用するRPC schemaへ依存する。schema変更はbackoff付きErrorとして扱い、誤ったVersionを通知しない。Apple側もStoreの公開反映より先に検知することはできない。したがって「配信後できるだけ早く」は満たすが、Store内部で公開される前の検知は保証しない。

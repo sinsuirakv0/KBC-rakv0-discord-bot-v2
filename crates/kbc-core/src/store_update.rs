@@ -40,6 +40,13 @@ impl StorePlatform {
         }
     }
 
+    pub(crate) fn store_name(self) -> &'static str {
+        match self {
+            Self::Android => "Google Play",
+            Self::Ios => "App Store",
+        }
+    }
+
     pub(crate) fn store_url(self) -> &'static str {
         match self {
             Self::Android => "https://play.google.com/store/apps/details?id=jp.co.ponos.battlecats",
@@ -303,6 +310,14 @@ pub(crate) fn valid_version(value: &str) -> bool {
     parse_version(value).is_some()
 }
 
+pub(crate) fn asset_version_code(value: &str) -> Option<String> {
+    let parts = parse_version(value)?;
+    let major = *parts.first()?;
+    let minor = *parts.get(1).unwrap_or(&0);
+    let patch = *parts.get(2).unwrap_or(&0);
+    (parts.len() <= 3 && minor <= 99 && patch <= 99).then(|| format!("{major}{minor:02}{patch:02}"))
+}
+
 fn parse_version(value: &str) -> Option<Vec<u32>> {
     if value.is_empty() || value.len() > 64 {
         return None;
@@ -342,7 +357,10 @@ impl Display for StoreUpdateError {
 
 #[cfg(test)]
 mod tests {
-    use super::{compare_versions, parse_apple_version, parse_google_response, parse_google_rpc};
+    use super::{
+        asset_version_code, compare_versions, parse_apple_version, parse_google_response,
+        parse_google_rpc,
+    };
     use std::cmp::Ordering;
 
     #[test]
@@ -372,5 +390,7 @@ mod tests {
             Some(Ordering::Greater)
         );
         assert_eq!(compare_versions("15.6", "15.6.0"), Some(Ordering::Equal));
+        assert_eq!(asset_version_code("15.7.0").as_deref(), Some("150700"));
+        assert_eq!(asset_version_code("15.6.1").as_deref(), Some("150601"));
     }
 }

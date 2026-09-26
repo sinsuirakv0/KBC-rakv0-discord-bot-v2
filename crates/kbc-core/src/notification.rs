@@ -22,7 +22,9 @@ use crate::commands::skd::data_source::{ScheduleType, SkdDataSource};
 use crate::commands::skd::with_related_sites;
 use crate::services::HttpService;
 use crate::storage::{NotificationCategory, StorageError, StorageService, Subscription};
-use crate::store_update::{StorePlatform, StoreVersionSource, compare_versions, valid_version};
+use crate::store_update::{
+    StorePlatform, StoreVersionSource, asset_version_code, compare_versions, valid_version,
+};
 
 const MAX_CONCURRENT_REQUESTS: usize = 4;
 const MAX_DETAIL_MESSAGES: usize = 128;
@@ -973,48 +975,34 @@ fn format_detection(
     event: &DetectionEvent,
     include_types: bool,
 ) -> Result<String, NotificationError> {
-    let timezone = FixedOffset::east_opt(9 * 60 * 60).expect("JST offset is valid");
-    let date = parse_timestamp(&event.detected_at)
-        .map_err(|_| NotificationError::new("invalid-event"))?
-        .with_timezone(&timezone);
-    let weekday =
-        ["日", "月", "火", "水", "木", "金", "土"][date.weekday().num_days_from_sunday() as usize];
-    let title = match event.category {
-        NotificationCategory::Skd => "**スケジュール更新**",
-        NotificationCategory::Ad => "adの更新を検知",
-        NotificationCategory::Notice => "popup_noticeの更新を検知",
-        NotificationCategory::UpdateAndroid | NotificationCategory::UpdateIos => {
-            "**にゃんこ大戦争 アップデート**"
-        }
-    };
-    let mut lines = vec![
-        title.to_owned(),
-        format!(
-            "検知時刻: {:04}/{:02}/{:02}({weekday}) {:02}:{:02}:{:02}",
-            date.year(),
-            date.month(),
-            date.day(),
-            date.hour(),
-            date.minute(),
-            date.second()
-        ),
-    ];
+    let detected_at = format_detected_at(&event.detected_at)?;
     if let Some(update) = &event.store_update {
         let platform = match event.category {
             NotificationCategory::UpdateAndroid => StorePlatform::Android,
             NotificationCategory::UpdateIos => StorePlatform::Ios,
             _ => return Err(NotificationError::new("invalid-event")),
         };
-        lines.insert(1, format!("対象: {}", platform.label()));
-        lines.insert(
-            2,
-            format!(
-                "バージョン: `{}` → `{}`",
-                update.previous_version, update.version
-            ),
-        );
-        lines.push(platform.store_url().to_owned());
+        let version = asset_version_code(&update.version)
+            .ok_or_else(|| NotificationError::new("invalid-event"))?;
+        let compare = asset_version_code(&update.previous_version)
+            .ok_or_else(|| NotificationError::new("invalid-event"))?;
+        return Ok(format!(
+            "NEW Version\n{} Ver.{}\n検知時刻: {detected_at}\nKBC\nhttps://kbc-rakv0.vercel.app/pages/asset-explorer/?dataset=Local&version={version}&compare={compare}&view=diff&layout=grid&offset=200\n{}\n{}\n※反映まで少し時間がかかります",
+            platform.key(),
+            update.version,
+            platform.store_name(),
+            platform.store_url()
+        ));
     }
+    let title = match event.category {
+        NotificationCategory::Skd => "**スケジュール更新**",
+        NotificationCategory::Ad => "adの更新を検知",
+        NotificationCategory::Notice => "popup_noticeの更新を検知",
+        NotificationCategory::UpdateAndroid | NotificationCategory::UpdateIos => {
+            return Err(NotificationError::new("invalid-event"));
+        }
+    };
+    let mut lines = vec![title.to_owned(), format!("検知時刻: {detected_at}")];
     if event.category == NotificationCategory::Skd && include_types && !event.types.is_empty() {
         lines.push(format!(
             "種類: {}",
@@ -1027,6 +1015,24 @@ fn format_detection(
         ));
     }
     Ok(lines.join("\n"))
+}
+
+fn format_detected_at(value: &str) -> Result<String, NotificationError> {
+    let timezone = FixedOffset::east_opt(9 * 60 * 60).expect("JST offset is valid");
+    let date = parse_timestamp(value)
+        .map_err(|_| NotificationError::new("invalid-event"))?
+        .with_timezone(&timezone);
+    let weekday =
+        ["日", "月", "火", "水", "木", "金", "土"][date.weekday().num_days_from_sunday() as usize];
+    Ok(format!(
+        "{:04}/{:02}/{:02}({weekday}) {:02}:{:02}:{:02}",
+        date.year(),
+        date.month(),
+        date.day(),
+        date.hour(),
+        date.minute(),
+        date.second()
+    ))
 }
 
 fn with_role_mentions(content: &str, role_ids: &[String]) -> String {
@@ -1158,5 +1164,21 @@ async fn wait_for_shutdown(receiver: &mut watch::Receiver<bool>) {
         if *receiver.borrow() {
             return;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{DetectionEvent, format_detection};
+    use crate::store_update::StorePlatform;
+
+    #[test]
+    fn formats_store_update_notification() {
+        let mut event = DetectionEvent::store_update(StorePlatform::Ios, "15.6.0", "15.7.0");
+        event.detected_at = "2026-09-26T03:34:56Z".to_owned();
+        assert_eq!(
+            format_detection(&event, true).unwrap(),
+            "NEW Version\nios Ver.15.7.0\n検知時刻: 2026/09/26(土) 12:34:56\nKBC\nhttps://kbc-rakv0.vercel.app/pages/asset-explorer/?dataset=Local&version=150700&compare=150600&view=diff&layout=grid&offset=200\nApp Store\nhttps://apps.apple.com/jp/app/id547145938\n※反映まで少し時間がかかります"
+        );
     }
 }
