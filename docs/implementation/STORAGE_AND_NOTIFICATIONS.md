@@ -36,6 +36,7 @@ GitHubのowner、repository、tokenは3つ揃っている場合だけ有効に�
 - branchと`meta.json`のschemaを確認する。
 - `config/guilds/*.json`を起動時に復元する。
 - Bot全体で共通の`config/maintainers.json`を起動時に復元する。ファイルがまだ存在しない場合は空設定として扱う。
+- Android・iOS別の公開Version基準値を`state/store-versions.json`から復元する。初回観測時は通知せず、このFileを作成する。
 - Guild設定には通知先に加え、最大9件の通知用Role、単一のRole選択パネル、通知先別mention Role、最大9件のSKD関連サイトURLを保存する。追加fieldはSerde defaultで旧設定と互換にする。
 - 1文書256 KiB、1Directory 999 Fileを上限とする。
 - Writeは1秒間隔で直列化する。
@@ -71,6 +72,8 @@ pending
 SKD詳細は`o.skd`と同じParser、差分、名称DataSource、Formatterを使う。生成した本文をEvent Recordへ保存してから、gatya、sale、item、mission、変更、関連サイトの順で配送する。関連サイトの先頭は従来のKBC履歴URLであり、`o.skd`実行時と通知配送時に対象Guildの追加URLを末尾へ差し込む。`o.skd`は追加URLを表示しても通常の`sendMessage`を使い、通知Roleをmentionしない。
 
 通知Role mentionは初回の`sendNotification`だけで`allowedRoleIds`を明示する。最終本文への編集とSKD詳細Messageではmentionを許可しないため、1回の更新で重複mentionを発生させない。
+
+ストア版アップデートは`o.push update android`と`o.push update ios`で通知先・mention Roleを別々に登録する。2本の監視Loopは5秒間隔で独立して動き、候補Versionを再取得で確認してから既存の冪等配送へ渡す。詳細は`docs/implementation/STORE_VERSION_NOTIFICATIONS.md`に記録する。
 
 ## Local設定
 

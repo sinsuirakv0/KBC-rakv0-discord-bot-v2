@@ -38,7 +38,7 @@ private GitHub Data Repositoryの`config/maintainers.json`を正本とする。
 
 一般Memberは番号Reactionの追加でRoleを取得し、同じReactionの解除でRoleを外す。Role付与時は権限ゼロ・Bot管理可能を毎回再検査する。パネルを移動した場合は旧パネルを無効化する。
 
-`o.push <category> role:<Role ID> [del]`は、通知先が登録済みで、かつRoleが選択肢へ登録済みの場合だけ通知mentionを変更する。通知先は自動登録しない。`o.push skd url <URL> add|del`はSKD通知の関連サイトへGuild固有URLを追加・削除する。
+`o.push <category> role:<Role ID> [del]`は、通知先が登録済みで、かつRoleが選択肢へ登録済みの場合だけ通知mentionを変更する。通知先は自動登録しない。ストア版更新は`o.push update android`と`o.push update ios`を別Subscriptionとして扱い、それぞれ別の通知先・mention Roleを設定できる。`o.push skd url <URL> add|del`はSKD通知の関連サイトへGuild固有URLを追加・削除する。
 
 ## Discord要件
 

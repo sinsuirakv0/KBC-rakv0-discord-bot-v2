@@ -28,6 +28,7 @@ NativeCore (N-API)
    ├─ StorageService ─→ private GitHub Repository
    ├─ NotificationService
    │  ├─ 外部更新の検証と最大4件の受付
+   │  ├─ Android・iOS Store Versionの独立監視
    │  ├─ 直列配送と永続Checkpoint
    │  └─ ActionResult待機（最大30秒）
    ├─ Shutdown signal
@@ -54,7 +55,7 @@ Event Queueが満杯の場合、`submit_event()`は空きができるまで待�
 - `AppRuntime::start(config)`: Queue容量を検証し、Contentを読み込んだ後、Queue、停止通知、Workerを作る。
 - `submit_event(event)`: Protocol Versionを検査し、Event Queueへ投入する。
 - `next_action()`: Actionを1件待つ。停止後は`None`を返す。
-- `shutdown()`: 停止を通知し、Worker終了を待つ。
+- `shutdown()`: 停止を通知し、Command Worker、Store監視、Task Workerの終了を待つ。
 - `is_shutdown()`: 現在の停止状態を返す。
 
 N-APIでは`createCore()`が`AppRuntime::start()`を呼び、返された`NativeCore`が`submitEvent()`、`nextAction()`、`shutdown()`を公開する。
