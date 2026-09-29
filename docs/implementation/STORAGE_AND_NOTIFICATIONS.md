@@ -37,6 +37,7 @@ GitHubのowner、repository、tokenは3つ揃っている場合だけ有効に�
 - `config/guilds/*.json`を起動時に復元する。
 - Bot全体で共通の`config/maintainers.json`を起動時に復元する。ファイルがまだ存在しない場合は空設定として扱う。
 - Android・iOS別の公開Version基準値を`state/store-versions.json`から復元する。初回観測時は通知せず、このFileを作成する。
+- Botの累計稼働時間を`state/bot-uptime.json`へ保存する。rolling deployment時は加算済み時刻とprocess起動時刻から未計上区間だけを統合する。
 - Guild設定には通知先に加え、最大9件の通知用Role、単一のRole選択パネル、通知先別mention Role、最大9件のSKD関連サイトURLを保存する。追加fieldはSerde defaultで旧設定と互換にする。
 - 1文書256 KiB、1Directory 999 Fileを上限とする。
 - Writeは1秒間隔で直列化する。

@@ -40,7 +40,7 @@ event
 
 `actionResult`はTypeScriptがDiscord操作を終えた結果をCoreへ返すEventである。通常成功時は必要に応じて`messageId`を返し、Guild member解決時は有限な`membersResolved`を返す。失敗時は安定したcodeとretry可否だけを返す。内部例外やStack TraceはProtocolへ載せない。
 
-`componentInteraction`はButton・Selectのcustom IDと選択値を、`modalSubmit`はModal fieldをplain dataとしてCoreへ渡す。Discord Interaction objectはProtocolへ渡さない。ShutdownはEventではなくLifecycle APIとして扱う。
+`componentInteraction`はButton・Selectのcustom ID、対象message ID、選択値を、`modalSubmit`はModal fieldをplain dataとしてCoreへ渡す。Discord Interaction objectはProtocolへ渡さない。ShutdownはEventではなくLifecycle APIとして扱う。
 
 ## 3. Version 1のAction
 
@@ -53,16 +53,19 @@ requestId
 action
 ```
 
-現行Version 6のAction Variantは次の18個とする。
+現行Version 7のAction Variantは次の21個とする。
 
 - `sendMessage`
 - `sendInteractiveMessage`
+- `sendRichMessage`
 - `replyInteraction`
 - `updateInteraction`
 - `editInteractionReply`
+- `editRichInteractionReply`
 - `showModal`
 - `sendNotification`
 - `editMessage`
+- `editRichMessage`
 - `sendAttachment`
 - `sendAttachmentFile`
 - `addReaction`
@@ -75,6 +78,8 @@ action
 - `removeGuildMemberRole`
 
 AttachmentのdataはProtocol上`Uint8Array`とし、N-APIの実運用経路ではNode.js `Buffer`として扱う。base64文字列へ変換しない。
+
+`RichMessage`は本文、Embed、Message Component、byte attachmentをまとめる汎用構造である。画像はAttachment名をEmbedから参照でき、Bot statusのGraph差替えにも同じActionを利用する。
 
 `sendNotification`は`sendMessage`にDiscord nonceと明示的な`allowedRoleIds`を加えた通知専用Actionである。Adapterは`enforceNonce: true`で実行し、同じ通知の応答消失時にDiscord側でも重複を抑止する。Role mentionはCoreが本文と許可IDを決め、Adapterは`allowedMentions.parse`を空にしたまま指定Roleだけを許可する。通常Commandは従来どおり`sendMessage`を使う。
 
@@ -114,7 +119,7 @@ Wire fieldはcamelCase、Variant識別子は`type`とする。生成されたTyp
 
 ## 6. Version互換性
 
-現在の`PROTOCOL_VERSION`は`6`である。Version 6ではMessage Component・ModalのEvent/Action、送信可能Channel検査、`channelResolved`を追加したためVersionを上げた。
+現在の`PROTOCOL_VERSION`は`7`である。Version 7では`componentInteraction.messageId`と、Embed・添付を扱うRich Message Actionを追加したためVersionを上げた。
 
 AdapterはNative module読込時に`getRuntimeInfo()`を呼び、Rust CoreとAdapterのVersionが一致しなければ起動を失敗させる。
 
