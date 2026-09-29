@@ -17,10 +17,27 @@ pub(crate) async fn has_maintainer_access(
     storage: &StorageService,
     context: &CommandContext,
 ) -> Result<bool, StorageError> {
-    if is_bot_administrator(context.user_id()) {
+    has_maintainer_identity_access(storage, context.user_id(), context.member_role_ids()).await
+}
+
+pub(crate) async fn has_maintainer_identity_access(
+    storage: &StorageService,
+    user_id: &str,
+    member_role_ids: &[String],
+) -> Result<bool, StorageError> {
+    if is_bot_administrator(user_id) {
         return Ok(true);
     }
-    storage
-        .is_maintainer(context.user_id(), context.member_role_ids())
-        .await
+    storage.is_maintainer(user_id, member_role_ids).await
+}
+
+pub(crate) fn try_has_maintainer_identity_access(
+    storage: &StorageService,
+    user_id: &str,
+    member_role_ids: &[String],
+) -> Result<bool, StorageError> {
+    if is_bot_administrator(user_id) {
+        return Ok(true);
+    }
+    storage.try_is_maintainer(user_id, member_role_ids)
 }

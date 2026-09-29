@@ -12,6 +12,7 @@ use kbc_protocol::{
 use crate::command::{CommandContext, CommandOutput, CommandRegistrationError, CommandRegistry};
 use crate::commands::{MissingCommandContent, built_in_commands};
 use crate::content::ContentCatalog;
+use crate::notification_role_settings::NotificationRoleSettingsService;
 use crate::services::{Clock, HttpService};
 use crate::session::SessionRegistration;
 use crate::storage::StorageService;
@@ -30,6 +31,7 @@ impl CommandRuntime {
         clock: Arc<dyn Clock>,
         storage: Arc<StorageService>,
         tasks: Arc<TaskRuntime>,
+        role_settings: Arc<NotificationRoleSettingsService>,
         ffmpeg_path: Option<PathBuf>,
     ) -> Result<Self, CommandRuntimeInitializationError> {
         Ok(Self {
@@ -39,6 +41,7 @@ impl CommandRuntime {
                 clock,
                 storage,
                 tasks,
+                role_settings,
                 ffmpeg_path,
             )?)?,
         })

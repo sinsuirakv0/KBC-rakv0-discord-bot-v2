@@ -5,12 +5,9 @@ use std::sync::Arc;
 use kbc_protocol::{ActionOutcome, CoreActionData};
 
 use crate::command::{Command, CommandContext, CommandFuture, CommandMetadata, CommandOutput};
+use crate::notification_role_settings::NotificationRoleSettingsService;
 use crate::permissions::{has_maintainer_access, is_bot_administrator};
-use crate::role_panel::number_emoji;
-use crate::storage::{
-    MAX_MAINTAINER_SUBJECTS, MAX_NOTIFICATION_ROLES, NotificationRole, NotificationRolePanel,
-    StorageService,
-};
+use crate::storage::{MAX_MAINTAINER_SUBJECTS, MAX_NOTIFICATION_ROLES, StorageService};
 use crate::task_runtime::TaskRuntime;
 
 const USAGE_MESSAGE: &str = "使い方: o.maint maintainer <ID> [del] / o.maint maintainer list / o.maint role <ロール名> / o.maint pushsetting [ロールID add|del]";
@@ -23,10 +20,16 @@ pub(super) struct MaintCommand {
     help: String,
     storage: Arc<StorageService>,
     tasks: Arc<TaskRuntime>,
+    role_settings: Arc<NotificationRoleSettingsService>,
 }
 
 impl MaintCommand {
-    pub(super) fn new(help: &str, storage: Arc<StorageService>, tasks: Arc<TaskRuntime>) -> Self {
+    pub(super) fn new(
+        help: &str,
+        storage: Arc<StorageService>,
+        tasks: Arc<TaskRuntime>,
+        role_settings: Arc<NotificationRoleSettingsService>,
+    ) -> Self {
         Self {
             metadata: CommandMetadata {
                 name: "maint".to_owned(),
@@ -36,6 +39,7 @@ impl MaintCommand {
             help: help.to_owned(),
             storage,
             tasks,
+            role_settings,
         }
     }
 
@@ -200,24 +204,17 @@ impl MaintCommand {
     async fn create_role(&self, context: &CommandContext, name: String) -> CommandOutput {
         let guild_id = context.guild_id().expect("guild-only command has a guild");
         match self
-            .tasks
-            .request_adapter(
-                context.request_id(),
-                CoreActionData::CreateGuildRole {
-                    guild_id: guild_id.to_owned(),
-                    name,
-                },
-            )
+            .role_settings
+            .create_role(context.request_id(), guild_id, name)
             .await
         {
-            Ok(ActionOutcome::RoleResolved { role_id, name }) => message(
+            Ok(role) => message(
                 context.channel_id(),
-                format!("通知用ロール `@{name}` (`{role_id}`) を作成しました。"),
+                format!(
+                    "通知用ロール `@{}` (`{}`) を作成しました。",
+                    role.name, role.role_id
+                ),
             ),
-            Ok(outcome) => {
-                eprintln!("Unexpected role creation outcome: {outcome:?}");
-                message(context.channel_id(), "❌ ロールを作成できませんでした。")
-            }
             Err(error) => {
                 eprintln!("Role creation failed: {error}");
                 message(context.channel_id(), "❌ ロールを作成できませんでした。")
@@ -232,70 +229,29 @@ impl MaintCommand {
         enabled: bool,
     ) -> CommandOutput {
         let guild_id = context.guild_id().expect("guild-only command has a guild");
-        let role = if enabled {
-            match self
-                .tasks
-                .request_adapter(
-                    context.request_id(),
-                    CoreActionData::ResolveAssignableRole {
-                        guild_id: guild_id.to_owned(),
-                        role_id: role_id.to_owned(),
-                    },
-                )
-                .await
-            {
-                Ok(ActionOutcome::RoleResolved { role_id, name }) => {
-                    NotificationRole { role_id, name }
-                }
-                Ok(ActionOutcome::Failure { code, .. }) => {
-                    return message(context.channel_id(), role_validation_message(&code));
-                }
-                Ok(outcome) => {
-                    eprintln!("Unexpected role resolution outcome: {outcome:?}");
-                    return message(context.channel_id(), "❌ ロールを確認できませんでした。");
-                }
-                Err(error) => {
-                    eprintln!("Role resolution failed: {error}");
-                    return message(context.channel_id(), "❌ ロールを確認できませんでした。");
-                }
-            }
-        } else {
-            NotificationRole {
-                role_id: role_id.to_owned(),
-                name: "削除対象".to_owned(),
-            }
-        };
-        let changed = match self
-            .storage
-            .set_notification_role(guild_id, &role, enabled)
+        let result = match self
+            .role_settings
+            .set_role(context.request_id(), guild_id, role_id, enabled)
             .await
         {
-            Ok(changed) => changed,
+            Ok(result) => result,
             Err(error) => {
-                let content = if error.code() == "notification-role-limit-reached" {
-                    format!("❌ 通知ロールは最大{MAX_NOTIFICATION_ROLES}件までです。")
-                } else {
-                    eprintln!("Notification role update failed: {error}");
-                    "❌ 通知ロール設定の保存に失敗しました。".to_owned()
+                let content = match error.code() {
+                    "role_has_permissions" | "role_not_manageable" | "role_unavailable" => {
+                        role_validation_message(error.code()).to_owned()
+                    }
+                    "notification-role-limit-reached" => {
+                        format!("❌ 通知ロールは最大{MAX_NOTIFICATION_ROLES}件までです。")
+                    }
+                    _ => {
+                        eprintln!("Notification role update failed: {error}");
+                        "❌ 通知ロール設定の保存に失敗しました。".to_owned()
+                    }
                 };
                 return message(context.channel_id(), content);
             }
         };
-        let settings = match self.storage.notification_role_settings(guild_id).await {
-            Ok(settings) => settings,
-            Err(error) => {
-                eprintln!("Notification role settings reload failed: {error}");
-                return message(
-                    context.channel_id(),
-                    "❌ 通知ロール設定を再読込できませんでした。",
-                );
-            }
-        };
-        let panel_updated = match &settings.panel {
-            Some(panel) => self.refresh_panel(context, panel, &settings.roles).await,
-            None => true,
-        };
-        let status = match (enabled, changed) {
+        let status = match (enabled, result.changed) {
             (true, true) => "通知設定へ追加しました。",
             (true, false) => "通知設定へ追加済みです。",
             (false, true) => "通知設定から削除しました。関連する通知メンションも解除しました。",
@@ -303,7 +259,7 @@ impl MaintCommand {
         };
         message(
             context.channel_id(),
-            if panel_updated {
+            if result.panel_updated {
                 status.to_owned()
             } else {
                 format!(
@@ -315,161 +271,27 @@ impl MaintCommand {
 
     async fn publish_role_panel(&self, context: &CommandContext) -> CommandOutput {
         let guild_id = context.guild_id().expect("guild-only command has a guild");
-        let settings = match self.storage.notification_role_settings(guild_id).await {
-            Ok(settings) => settings,
-            Err(error) => {
-                eprintln!("Notification role settings load failed: {error}");
-                return message(
-                    context.channel_id(),
-                    "❌ 通知ロール設定を読み込めませんでした。",
-                );
-            }
-        };
-        let outcome = self
-            .tasks
-            .request_adapter(
-                context.request_id(),
-                CoreActionData::SendMessage {
-                    channel_id: context.channel_id().to_owned(),
-                    content: panel_content(&settings.roles),
+        match self
+            .role_settings
+            .publish_panel(context.request_id(), guild_id, context.channel_id())
+            .await
+        {
+            Ok(result) => message(
+                context.channel_id(),
+                if result.old_panel_disabled {
+                    "通知設定メッセージを設置しました。"
+                } else {
+                    "通知設定メッセージを設置しました。旧メッセージの無効化だけ失敗しました。"
                 },
-            )
-            .await;
-        let Some(message_id) = successful_message_id(outcome) else {
-            return message(
-                context.channel_id(),
-                "❌ 通知設定メッセージを作成できませんでした。",
-            );
-        };
-        let new_panel = NotificationRolePanel {
-            channel_id: context.channel_id().to_owned(),
-            message_id,
-        };
-        if !self
-            .add_panel_reactions(context, &new_panel, settings.roles.len())
-            .await
-        {
-            let _ = self
-                .disable_panel(context, &new_panel, "通知設定の作成に失敗しました")
-                .await;
-            return message(
-                context.channel_id(),
-                "❌ 通知設定のリアクションを追加できませんでした。",
-            );
-        }
-        if let Err(error) = self
-            .storage
-            .set_notification_role_panel(guild_id, new_panel.clone())
-            .await
-        {
-            eprintln!("Notification role panel save failed: {error}");
-            let _ = self
-                .disable_panel(context, &new_panel, "通知設定の保存に失敗しました")
-                .await;
-            return message(
-                context.channel_id(),
-                "❌ 通知設定メッセージを保存できませんでした。",
-            );
-        }
-        let old_panel_disabled = match settings.panel {
-            Some(old_panel) if old_panel != new_panel => {
-                self.disable_panel(context, &old_panel, "通知設定は移動しました")
-                    .await
-            }
-            _ => true,
-        };
-        message(
-            context.channel_id(),
-            if old_panel_disabled {
-                "通知設定メッセージを設置しました。"
-            } else {
-                "通知設定メッセージを設置しました。旧メッセージの無効化だけ失敗しました。"
-            },
-        )
-    }
-
-    async fn refresh_panel(
-        &self,
-        context: &CommandContext,
-        panel: &NotificationRolePanel,
-        roles: &[NotificationRole],
-    ) -> bool {
-        for action in [
-            CoreActionData::EditMessage {
-                channel_id: panel.channel_id.clone(),
-                message_id: panel.message_id.clone(),
-                content: panel_content(roles),
-            },
-            CoreActionData::ClearReactions {
-                channel_id: panel.channel_id.clone(),
-                message_id: panel.message_id.clone(),
-            },
-        ] {
-            if !self.request_success(context, action).await {
-                return false;
-            }
-        }
-        self.add_panel_reactions(context, panel, roles.len()).await
-    }
-
-    async fn add_panel_reactions(
-        &self,
-        context: &CommandContext,
-        panel: &NotificationRolePanel,
-        count: usize,
-    ) -> bool {
-        for index in 0..count {
-            let Some(emoji) = number_emoji(index) else {
-                return false;
-            };
-            if !self
-                .request_success(
-                    context,
-                    CoreActionData::AddReaction {
-                        channel_id: panel.channel_id.clone(),
-                        message_id: panel.message_id.clone(),
-                        emoji: emoji.to_owned(),
-                    },
+            ),
+            Err(error) => {
+                eprintln!("Notification role panel publish failed: {error}");
+                message(
+                    context.channel_id(),
+                    "❌ 通知設定メッセージを作成できませんでした。",
                 )
-                .await
-            {
-                return false;
             }
         }
-        true
-    }
-
-    async fn disable_panel(
-        &self,
-        context: &CommandContext,
-        panel: &NotificationRolePanel,
-        content: &str,
-    ) -> bool {
-        for action in [
-            CoreActionData::ClearReactions {
-                channel_id: panel.channel_id.clone(),
-                message_id: panel.message_id.clone(),
-            },
-            CoreActionData::EditMessage {
-                channel_id: panel.channel_id.clone(),
-                message_id: panel.message_id.clone(),
-                content: content.to_owned(),
-            },
-        ] {
-            if !self.request_success(context, action).await {
-                return false;
-            }
-        }
-        true
-    }
-
-    async fn request_success(&self, context: &CommandContext, action: CoreActionData) -> bool {
-        matches!(
-            self.tasks
-                .request_adapter(context.request_id(), action)
-                .await,
-            Ok(ActionOutcome::Success { .. })
-        )
     }
 }
 
@@ -547,37 +369,6 @@ fn normalize_subject_id(value: &str) -> Option<String> {
             .all(|character| character.is_ascii_digit())
         && unwrapped.parse::<u64>().is_ok_and(|number| number > 0))
     .then(|| unwrapped.to_owned())
-}
-
-fn panel_content(roles: &[NotificationRole]) -> String {
-    let mut lines = vec!["通知設定".to_owned()];
-    if roles.is_empty() {
-        lines.push("設定されている通知ロールはありません".to_owned());
-    } else {
-        lines.extend(
-            roles
-                .iter()
-                .enumerate()
-                .map(|(index, role)| format!("{} {}", index + 1, role.name.replace('`', "′"))),
-        );
-    }
-    format!("```\n{}\n```", lines.join("\n"))
-}
-
-fn successful_message_id(outcome: Result<ActionOutcome, &'static str>) -> Option<String> {
-    match outcome {
-        Ok(ActionOutcome::Success {
-            message_id: Some(message_id),
-        }) => Some(message_id),
-        Ok(outcome) => {
-            eprintln!("Unexpected panel message outcome: {outcome:?}");
-            None
-        }
-        Err(error) => {
-            eprintln!("Panel message action failed: {error}");
-            None
-        }
-    }
 }
 
 fn role_validation_message(code: &str) -> &'static str {

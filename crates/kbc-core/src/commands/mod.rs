@@ -8,6 +8,7 @@ mod item;
 mod maint;
 mod push;
 mod sale;
+pub(crate) mod settings;
 pub(crate) mod skd;
 mod st;
 mod static_response;
@@ -19,6 +20,7 @@ use std::sync::Arc;
 
 use crate::command::Command;
 use crate::content::ContentCatalog;
+use crate::notification_role_settings::NotificationRoleSettingsService;
 use crate::services::{Clock, HttpService};
 use crate::storage::StorageService;
 use crate::task_runtime::TaskRuntime;
@@ -29,6 +31,7 @@ use item::{ItemCommand, RegisteredItemDataSource};
 use maint::MaintCommand;
 use push::PushCommand;
 use sale::{RegisteredSaleDataSource, SaleCommand};
+use settings::SettingsCommand;
 use skd::SkdCommand;
 use st::StCommand;
 use static_response::StaticResponseCommand;
@@ -41,6 +44,7 @@ pub(crate) fn built_in_commands(
     clock: Arc<dyn Clock>,
     storage: Arc<StorageService>,
     tasks: Arc<TaskRuntime>,
+    role_settings: Arc<NotificationRoleSettingsService>,
     ffmpeg_path: Option<PathBuf>,
 ) -> Result<Vec<Box<dyn Command>>, MissingCommandContent> {
     let mut commands: Vec<Box<dyn Command>> = content
@@ -65,6 +69,14 @@ pub(crate) fn built_in_commands(
         maint_help,
         Arc::clone(&storage),
         Arc::clone(&tasks),
+        Arc::clone(&role_settings),
+    )));
+    let settings_help = content
+        .help("settings")
+        .ok_or(MissingCommandContent::CommandHelp("settings"))?;
+    commands.push(Box::new(SettingsCommand::new(
+        settings_help,
+        Arc::clone(&storage),
     )));
     let item_help = content
         .help("item")

@@ -7,6 +7,7 @@ mod commands;
 mod content;
 mod motion;
 mod notification;
+mod notification_role_settings;
 mod permissions;
 mod role_panel;
 mod runtime;

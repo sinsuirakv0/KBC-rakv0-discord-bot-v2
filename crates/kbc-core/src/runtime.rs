@@ -7,13 +7,15 @@ use std::time::Duration;
 
 use kbc_protocol::{CoreAction, CoreEvent, CoreEventData, EventId, ProtocolVersionMismatch};
 use tokio::sync::{Mutex, mpsc, watch};
-use tokio::task::JoinHandle;
+use tokio::task::{JoinHandle, JoinSet};
 use tokio::time::Instant;
 
 use crate::action_bus::ActionBus;
 use crate::command_runtime::{CommandActionBatch, CommandRuntime};
+use crate::commands::settings::SettingsInteractionService;
 use crate::content::ContentCatalog;
 use crate::notification::{NotificationError, NotificationService};
+use crate::notification_role_settings::NotificationRoleSettingsService;
 use crate::role_panel::RolePanelService;
 use crate::services::{HttpService, HttpServiceConfig, SystemClock};
 use crate::session::{DEFAULT_MAX_SESSIONS, SessionManager, SessionRegistration};
@@ -26,6 +28,7 @@ pub const MAX_QUEUE_CAPACITY: usize = 1024;
 pub const DEFAULT_HTTP_MAX_CONCURRENCY: usize = 4;
 pub const DEFAULT_HTTP_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 pub const DEFAULT_HTTP_MAX_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
+const SETTINGS_INTERACTION_CONCURRENCY: usize = 4;
 const MAX_HTTP_CONCURRENCY: usize = 64;
 const MAX_HTTP_REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
 const MAX_HTTP_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
@@ -105,12 +108,17 @@ impl AppRuntime {
             action_sender.clone(),
             shutdown_receiver.clone(),
         ));
+        let role_settings = Arc::new(NotificationRoleSettingsService::new(
+            Arc::clone(&storage),
+            Arc::clone(&tasks),
+        ));
         let command_runtime = CommandRuntime::new(
             &content,
             Arc::clone(&http),
             clock,
             Arc::clone(&storage),
             Arc::clone(&tasks),
+            Arc::clone(&role_settings),
             config.ffmpeg_path,
         )
         .map_err(|error| RuntimeError::CommandRegistration(error.to_string()))?;
@@ -120,9 +128,11 @@ impl AppRuntime {
             action_sender.clone(),
             shutdown_receiver.clone(),
         ));
-        let role_panel = RolePanelService::new(storage);
+        let role_panel = RolePanelService::new(Arc::clone(&storage));
+        let settings = SettingsInteractionService::new(storage, Arc::clone(&tasks), role_settings);
         let worker = tokio::spawn(run_worker(
             command_runtime,
+            settings,
             role_panel,
             event_receiver,
             action_sender,
@@ -327,17 +337,28 @@ fn validate_range(setting: &'static str, value: u128, maximum: u128) -> Result<(
 
 async fn run_worker(
     command_runtime: CommandRuntime,
+    settings: SettingsInteractionService,
     role_panel: RolePanelService,
     mut event_receiver: mpsc::Receiver<CoreEvent>,
     action_sender: mpsc::Sender<CoreAction>,
     mut shutdown_receiver: watch::Receiver<bool>,
 ) {
     let mut session_manager = SessionManager::new(DEFAULT_MAX_SESSIONS);
+    let mut settings_tasks = JoinSet::new();
     loop {
         let next_expiration = session_manager.next_expiration();
         let event = tokio::select! {
             biased;
-            _ = wait_for_shutdown(&mut shutdown_receiver) => return,
+            _ = wait_for_shutdown(&mut shutdown_receiver) => {
+                drain_settings_tasks(&mut settings_tasks).await;
+                return;
+            },
+            result = settings_tasks.join_next(), if !settings_tasks.is_empty() => {
+                if let Some(Err(error)) = result {
+                    eprintln!("Settings interaction task failed: {error}");
+                }
+                continue;
+            },
             _ = wait_for_session_expiration(next_expiration) => {
                 let expirations = session_manager.expire(Instant::now());
                 for expiration in expirations {
@@ -355,8 +376,38 @@ async fn run_worker(
             event = event_receiver.recv() => event,
         };
         let Some(event) = event else {
+            drain_settings_tasks(&mut settings_tasks).await;
             return;
         };
+        if SettingsInteractionService::handles_event(&event) {
+            if settings_tasks.len() >= SETTINGS_INTERACTION_CONCURRENCY {
+                if let Some(action) = SettingsInteractionService::busy_action(&event) {
+                    let actions = CommandActionBatch::from_data(
+                        event.event_id,
+                        event.request_id,
+                        vec![action],
+                    );
+                    if !send_actions(actions, &action_sender, &mut shutdown_receiver).await {
+                        drain_settings_tasks(&mut settings_tasks).await;
+                        return;
+                    }
+                }
+                continue;
+            }
+            let settings = settings.clone();
+            let action_sender = action_sender.clone();
+            let mut task_shutdown_receiver = shutdown_receiver.clone();
+            settings_tasks.spawn(async move {
+                let event_id = event.event_id.clone();
+                let request_id = event.request_id.clone();
+                let Some(action_data) = settings.handle_event(&event).await else {
+                    return;
+                };
+                let actions = CommandActionBatch::from_data(event_id, request_id, action_data);
+                let _ = send_actions(actions, &action_sender, &mut task_shutdown_receiver).await;
+            });
+            continue;
+        }
         let actions = if matches!(&event.event, CoreEventData::MessageCreate { .. }) {
             let mut actions = tokio::select! {
                 biased;
@@ -386,6 +437,14 @@ async fn run_worker(
 
         if !send_actions(actions, &action_sender, &mut shutdown_receiver).await {
             return;
+        }
+    }
+}
+
+async fn drain_settings_tasks(tasks: &mut JoinSet<()>) {
+    while let Some(result) = tasks.join_next().await {
+        if let Err(error) = result {
+            eprintln!("Settings interaction task failed during shutdown: {error}");
         }
     }
 }
@@ -459,7 +518,9 @@ async fn handle_session_event(
                 .await
         }
         CoreEventData::ReactionRemove { .. } => None,
-        CoreEventData::MessageCreate { .. } => None,
+        CoreEventData::MessageCreate { .. }
+        | CoreEventData::ComponentInteraction { .. }
+        | CoreEventData::ModalSubmit { .. } => None,
     }?;
 
     let activation = output.activation;

@@ -1,4 +1,4 @@
-import { deepStrictEqual } from "node:assert/strict";
+﻿import { deepStrictEqual } from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
@@ -55,6 +55,61 @@ async function main(): Promise<void> {
         content: expectedContent,
       },
     });
+  }
+
+  await core.submitEvent({
+    protocolVersion: PROTOCOL_VERSION,
+    eventId: "event:settings",
+    requestId: "request:settings",
+    event: {
+      type: "messageCreate",
+      guildId: "123456789012345678",
+      channelId: "223456789012345678",
+      messageId: "323456789012345678",
+      userId: "1447045405257760820",
+      memberRoleIds: [],
+      content: "o.settings",
+    },
+  });
+  deepStrictEqual(await core.nextAction(), {
+    protocolVersion: PROTOCOL_VERSION,
+    actionId: "action:event:settings",
+    requestId: "request:settings",
+    action: {
+      type: "sendInteractiveMessage",
+      channelId: "223456789012345678",
+      content: "設定を開くには、下のボタンを押してください。",
+      rows: [{
+        components: [{
+          type: "button",
+          customId: "settings:open:1447045405257760820",
+          label: "設定を開く",
+          style: "primary",
+          disabled: false,
+        }],
+      }],
+    },
+  });
+  await core.submitEvent({
+    protocolVersion: PROTOCOL_VERSION,
+    eventId: "event:settings-open",
+    requestId: "request:settings-open",
+    event: {
+      type: "componentInteraction",
+      interactionId: "interaction:settings-open",
+      guildId: "123456789012345678",
+      channelId: "223456789012345678",
+      userId: "1447045405257760820",
+      memberRoleIds: [],
+      customId: "settings:open:1447045405257760820",
+      values: [],
+    },
+  });
+  const settingsMenu = await core.nextAction();
+  deepStrictEqual(settingsMenu?.action.type, "replyInteraction");
+  if (settingsMenu?.action.type === "replyInteraction") {
+    deepStrictEqual(settingsMenu.action.interactionId, "interaction:settings-open");
+    deepStrictEqual(settingsMenu.action.ephemeral, true);
   }
 
   const pendingAction = core.nextAction();

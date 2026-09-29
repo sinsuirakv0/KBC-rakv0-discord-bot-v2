@@ -226,6 +226,91 @@ impl StorageService {
             .collect())
     }
 
+    pub(crate) async fn guild_subscriptions(
+        &self,
+        guild_id: &str,
+    ) -> Result<Vec<Subscription>, StorageError> {
+        if !valid_snowflake(guild_id) {
+            return Err(StorageError::new("invalid-guild-id"));
+        }
+        let mut state = self.state.lock().await;
+        self.ensure_initialized(&mut state).await?;
+        Ok(state
+            .settings
+            .get(guild_id)
+            .map(|settings| settings.subscriptions.clone())
+            .unwrap_or_default())
+    }
+
+    pub(crate) fn try_notification_settings_snapshot(
+        &self,
+        guild_id: &str,
+    ) -> Result<(Vec<Subscription>, NotificationRoleSettings), StorageError> {
+        if !valid_snowflake(guild_id) {
+            return Err(StorageError::new("invalid-guild-id"));
+        }
+        let state = self.try_initialized_state()?;
+        let Some(settings) = state.settings.get(guild_id) else {
+            return Ok((Vec::new(), NotificationRoleSettings::default()));
+        };
+        Ok((
+            settings.subscriptions.clone(),
+            NotificationRoleSettings {
+                roles: settings.notification_roles.clone(),
+                panel: settings.notification_role_panel.clone(),
+            },
+        ))
+    }
+
+    pub(crate) async fn set_subscription_config(
+        &self,
+        subscription: Subscription,
+        enabled: bool,
+    ) -> Result<bool, StorageError> {
+        validate_subscription(&subscription)?;
+        let guild_id = subscription.guild_id.clone();
+        self.update_guild_settings(&guild_id, |settings| {
+            let position = settings.subscriptions.iter().position(|current| {
+                current.channel_id == subscription.channel_id
+                    && current.category == subscription.category
+            });
+            if enabled {
+                let configured_roles = settings
+                    .notification_roles
+                    .iter()
+                    .map(|role| role.role_id.as_str())
+                    .collect::<HashSet<_>>();
+                if subscription.role_ids.len() > MAX_NOTIFICATION_ROLES
+                    || subscription
+                        .role_ids
+                        .iter()
+                        .any(|role_id| !configured_roles.contains(role_id.as_str()))
+                    || subscription.role_ids.iter().collect::<HashSet<_>>().len()
+                        != subscription.role_ids.len()
+                {
+                    return Err(StorageError::new("invalid-subscription-role"));
+                }
+                if let Some(position) = position {
+                    if settings.subscriptions[position] == subscription {
+                        return Ok(false);
+                    }
+                    settings.subscriptions[position] = subscription.clone();
+                } else {
+                    settings.subscriptions.push(subscription.clone());
+                }
+            } else if position.is_some() {
+                settings.subscriptions.retain(|current| {
+                    current.channel_id != subscription.channel_id
+                        || current.category != subscription.category
+                });
+            } else {
+                return Ok(false);
+            }
+            Ok(true)
+        })
+        .await
+    }
+
     pub(crate) async fn store_version(
         &self,
         platform: StorePlatform,
@@ -481,6 +566,49 @@ impl StorageService {
             .unwrap_or_default())
     }
 
+    pub(crate) fn try_skd_related_urls(&self, guild_id: &str) -> Result<Vec<String>, StorageError> {
+        if !valid_snowflake(guild_id) {
+            return Err(StorageError::new("invalid-guild-id"));
+        }
+        let state = self.try_initialized_state()?;
+        Ok(state
+            .settings
+            .get(guild_id)
+            .map(|settings| settings.skd_related_urls.clone())
+            .unwrap_or_default())
+    }
+
+    pub(crate) async fn set_skd_related_urls(
+        &self,
+        guild_id: &str,
+        urls: Vec<String>,
+    ) -> Result<bool, StorageError> {
+        let normalized = urls
+            .into_iter()
+            .map(|url| {
+                normalize_web_url(&url).ok_or_else(|| StorageError::new("invalid-related-url"))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        if normalized.len() > MAX_SKD_RELATED_URLS
+            || normalized.iter().collect::<HashSet<_>>().len() != normalized.len()
+            || normalized
+                .iter()
+                .map(|url| url.chars().count())
+                .sum::<usize>()
+                > MAX_SKD_RELATED_URL_CHARS
+        {
+            return Err(StorageError::new("related-url-limit-reached"));
+        }
+        self.update_guild_settings(guild_id, |settings| {
+            if settings.skd_related_urls == normalized {
+                return Ok(false);
+            }
+            settings.skd_related_urls = normalized.clone();
+            Ok(true)
+        })
+        .await
+    }
+
     pub(crate) async fn set_maintainer(
         &self,
         subject_id: &str,
@@ -558,6 +686,26 @@ impl StorageService {
             || member_role_ids
                 .iter()
                 .any(|role_id| subjects.iter().any(|subject| subject == role_id)))
+    }
+
+    pub(crate) fn try_is_maintainer(
+        &self,
+        user_id: &str,
+        member_role_ids: &[String],
+    ) -> Result<bool, StorageError> {
+        let state = self.try_initialized_state()?;
+        Ok(state
+            .maintainers
+            .subject_ids
+            .iter()
+            .any(|subject| subject == user_id)
+            || member_role_ids.iter().any(|role_id| {
+                state
+                    .maintainers
+                    .subject_ids
+                    .iter()
+                    .any(|subject| subject == role_id)
+            }))
     }
 
     pub(crate) async fn initialize(&self) -> Result<(), StorageError> {
@@ -660,6 +808,19 @@ impl StorageService {
             }
         }
         Err(StorageError::new("conflict"))
+    }
+
+    fn try_initialized_state(
+        &self,
+    ) -> Result<tokio::sync::MutexGuard<'_, StorageState>, StorageError> {
+        let state = self
+            .state
+            .try_lock()
+            .map_err(|_| StorageError::new("storage-busy"))?;
+        if !state.initialized {
+            return Err(StorageError::new("storage-not-ready"));
+        }
+        Ok(state)
     }
 
     async fn ensure_initialized(&self, state: &mut StorageState) -> Result<(), StorageError> {
