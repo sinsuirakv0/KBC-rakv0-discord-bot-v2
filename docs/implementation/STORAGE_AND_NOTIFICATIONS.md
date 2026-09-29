@@ -69,7 +69,11 @@ pending
 
 `attempting`のまま残った投稿は結果不明であり、自動再投稿せず`reconciliation-required`を返す。message IDが確定済みの編集失敗は、同じEventの再受信時に再編集する。
 
+詳細配送では通知先ごとに全件を完了させず、同じ詳細番号を全通知先へ順番に送ってから次の番号へ進む。これによりStorage上の通知先順序が後ろのServerだけ、先行Serverの全詳細を待つ偏りを防ぐ。各詳細の成功結果は次の詳細を`attempting`へする書込みと同時に保存し、最後の1件だけ個別に確定する。送信前の`attempting`保存と結果不明時に自動再送しない性質は維持しつつ、GitHub書込みを詳細1件あたり2回から原則1回へ減らす。
+
 SKD詳細は`o.skd`と同じParser、差分、名称DataSource、Formatterを使う。生成した本文をEvent Recordへ保存してから、gatya、sale、item、mission、変更、関連サイトの順で配送する。関連サイトの先頭は従来のKBC履歴URLであり、`o.skd`実行時と通知配送時に対象Guildの追加URLを末尾へ差し込む。`o.skd`は追加URLを表示しても通常の`sendMessage`を使い、通知Roleをmentionしない。
+
+本番logの`Notification timing`はevent ID、phase、配送Lock待ち、Event Record保存、初回通知、詳細生成・保存、各詳細のCheckpointとDiscord Action、配送全体の所要時間をmsで記録する。TypeScript HTTP境界は`Event update timing`、上流のActionsは`[timing]`を記録するため、監視窓・Bot内部・HTTP再試行を別々に判定できる。
 
 通知Role mentionは初回の`sendNotification`だけで`allowedRoleIds`を明示する。最終本文への編集とSKD詳細Messageではmentionを許可しないため、1回の更新で重複mentionを発生させない。
 

@@ -5,7 +5,7 @@ use std::collections::{HashMap, HashSet};
 use std::fmt::{Display, Formatter};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Datelike, FixedOffset, SecondsFormat, Timelike, Utc};
 use kbc_protocol::{
@@ -42,6 +42,16 @@ enum DetectionPhase {
     Detected,
     Types,
     Ready,
+}
+
+impl DetectionPhase {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Detected => "detected",
+            Self::Types => "types",
+            Self::Ready => "ready",
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -214,6 +224,21 @@ impl DeliveryPart {
     }
 }
 
+#[derive(Clone)]
+struct CompletedFollowUp {
+    index: usize,
+    attempt_id: String,
+    message_id: String,
+    content: String,
+}
+
+struct FollowUpTarget {
+    channel_id: String,
+    contents: Vec<String>,
+    completed: Option<CompletedFollowUp>,
+    active: bool,
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct DeliveryRecord {
@@ -350,15 +375,30 @@ impl NotificationService {
     }
 
     pub(crate) async fn submit(&self, value: Value) -> Result<(), NotificationError> {
+        let submitted_at = Instant::now();
         let event = DetectionEvent::parse(value)?;
+        let event_id = event.event_id.clone();
+        let category = event.category.label();
+        let phase = event.phase.label();
         let _permit = Arc::clone(&self.request_permits)
             .try_acquire_owned()
             .map_err(|_| NotificationError::new("busy"))?;
+        let queue_started_at = Instant::now();
         let _delivery = self.delivery_lock.lock().await;
+        let queue_wait_ms = queue_started_at.elapsed().as_millis();
         if *self.shutdown_receiver.borrow() {
             return Err(NotificationError::new("unavailable"));
         }
-        self.deliver(event).await
+        eprintln!(
+            "Notification timing: event_id={event_id} category={category} phase={phase} stage=delivery-start queue_wait_ms={queue_wait_ms}"
+        );
+        let result = self.deliver(event).await;
+        eprintln!(
+            "Notification timing: event_id={event_id} category={category} phase={phase} stage=delivery-finish queue_wait_ms={queue_wait_ms} total_ms={} result={}",
+            submitted_at.elapsed().as_millis(),
+            notification_result_label(&result)
+        );
+        result
     }
 
     pub(crate) async fn handle_action_result(
@@ -482,12 +522,16 @@ impl NotificationService {
     }
 
     async fn deliver(&self, event: DetectionEvent) -> Result<(), NotificationError> {
+        let delivery_started_at = Instant::now();
+        let event_id = event.event_id.clone();
+        let category = event.category.label();
+        let phase = event.phase.label();
+        let storage_started_at = Instant::now();
         let subscriptions = self
             .storage
             .subscriptions()
             .await
             .map_err(storage_failure)?;
-        let event_id = event.event_id.clone();
         let record = self
             .storage
             .update_notification(&event_id, |current| {
@@ -495,6 +539,11 @@ impl NotificationService {
             })
             .await
             .map_err(storage_failure)?;
+        eprintln!(
+            "Notification timing: event_id={event_id} category={category} phase={phase} stage=record-ready duration_ms={} subscriptions={}",
+            storage_started_at.elapsed().as_millis(),
+            subscriptions.len()
+        );
         let active_channels = subscriptions
             .iter()
             .filter(|subscription| subscription.category == record.event.category)
@@ -510,7 +559,7 @@ impl NotificationService {
         let initial_content = format_detection(&record.event, false)?;
         let mut failed = false;
         let mut reconciliation = false;
-        for channel_id in &channels {
+        for (channel_index, channel_id) in channels.iter().enumerate() {
             let role_ids = subscriptions
                 .iter()
                 .find(|subscription| {
@@ -521,6 +570,7 @@ impl NotificationService {
                 .unwrap_or_default();
             let channel_initial_content = with_role_mentions(&initial_content, role_ids);
             let channel_content = with_role_mentions(&content, role_ids);
+            let primary_started_at = Instant::now();
             match self
                 .deliver_primary(
                     &event_id,
@@ -535,8 +585,15 @@ impl NotificationService {
                 Err(DeliveryFailure::Failed) => failed = true,
                 Err(DeliveryFailure::Reconciliation) => reconciliation = true,
             }
+            eprintln!(
+                "Notification timing: event_id={event_id} stage=primary-finish channel_index={} channel_id={} duration_ms={}",
+                channel_index + 1,
+                channel_id,
+                primary_started_at.elapsed().as_millis()
+            );
         }
         if record.event.source.is_some() && !channels.is_empty() {
+            let details_started_at = Instant::now();
             let details = match self.details(&event_id).await {
                 Ok(details) => details,
                 Err(error) => {
@@ -545,7 +602,13 @@ impl NotificationService {
                     Vec::new()
                 }
             };
-            for channel_id in &channels {
+            eprintln!(
+                "Notification timing: event_id={event_id} stage=details-ready duration_ms={} detail_count={}",
+                details_started_at.elapsed().as_millis(),
+                details.len()
+            );
+            let mut targets = Vec::new();
+            for (channel_index, channel_id) in channels.iter().enumerate() {
                 let related_urls = match subscriptions.iter().find(|subscription| {
                     subscription.category == record.event.category
                         && subscription.channel_id == *channel_id
@@ -569,32 +632,105 @@ impl NotificationService {
                     .and_then(|record| find_delivery(&record, channel_id).ok().cloned())
                     .is_some_and(|delivery| delivery.message_id.is_some());
                 if !can_send_details {
+                    eprintln!(
+                        "Notification timing: event_id={event_id} stage=detail-target-skipped channel_index={} channel_id={} reason=primary-unavailable",
+                        channel_index + 1,
+                        channel_id
+                    );
                     continue;
                 }
-                for (index, detail) in details.iter().enumerate() {
+                let mut contents = Vec::with_capacity(details.len());
+                let mut valid = true;
+                for detail in &details {
                     let Some(detail) = with_related_sites(detail, &related_urls) else {
                         eprintln!("Related site message exceeded the Discord content limit");
                         failed = true;
-                        continue;
+                        valid = false;
+                        break;
                     };
+                    contents.push(detail);
+                }
+                if valid {
+                    targets.push(FollowUpTarget {
+                        channel_id: channel_id.clone(),
+                        contents,
+                        completed: None,
+                        active: true,
+                    });
+                }
+            }
+            let dispatch_started_at = Instant::now();
+            for index in 0..details.len() {
+                for target in &mut targets {
+                    if !target.active {
+                        continue;
+                    }
+                    let previous = target.completed.clone();
                     match self
-                        .deliver_follow_up(&event_id, channel_id, index, &detail)
+                        .deliver_follow_up_step(
+                            &event_id,
+                            &target.channel_id,
+                            index,
+                            details.len(),
+                            &target.contents[index],
+                            previous.as_ref(),
+                        )
                         .await
                     {
-                        Ok(()) => {}
-                        Err(DeliveryFailure::Failed) => failed = true,
-                        Err(DeliveryFailure::Reconciliation) => reconciliation = true,
+                        Ok(completed) => target.completed = completed,
+                        Err(error) => {
+                            if let Some(completed) = previous.as_ref()
+                                && self
+                                    .complete_follow_up(&event_id, &target.channel_id, completed)
+                                    .await
+                                    .is_err()
+                            {
+                                failed = true;
+                            }
+                            target.completed = None;
+                            target.active = false;
+                            match error {
+                                DeliveryFailure::Failed => failed = true,
+                                DeliveryFailure::Reconciliation => reconciliation = true,
+                            }
+                        }
                     }
                 }
             }
+            for target in &mut targets {
+                let Some(completed) = target.completed.take() else {
+                    continue;
+                };
+                match self
+                    .complete_follow_up(&event_id, &target.channel_id, &completed)
+                    .await
+                {
+                    Ok(()) => {}
+                    Err(DeliveryFailure::Failed) => failed = true,
+                    Err(DeliveryFailure::Reconciliation) => reconciliation = true,
+                }
+            }
+            eprintln!(
+                "Notification timing: event_id={event_id} stage=details-finish duration_ms={} detail_count={} target_count={}",
+                dispatch_started_at.elapsed().as_millis(),
+                details.len(),
+                targets.len()
+            );
         }
-        if failed {
+        let result = if failed {
             Err(NotificationError::new("delivery-failed"))
         } else if reconciliation {
             Err(NotificationError::new("reconciliation-required"))
         } else {
             Ok(())
-        }
+        };
+        eprintln!(
+            "Notification timing: event_id={event_id} category={category} phase={phase} stage=deliver-complete duration_ms={} channels={} result={}",
+            delivery_started_at.elapsed().as_millis(),
+            channels.len(),
+            notification_result_label(&result)
+        );
+        result
     }
 
     async fn deliver_primary(
@@ -605,13 +741,17 @@ impl NotificationService {
         final_content: &str,
         allowed_role_ids: &[String],
     ) -> Result<(), DeliveryFailure> {
+        let primary_started_at = Instant::now();
+        let load_started_at = Instant::now();
         let record = self.load_record(event_id).await?;
+        let load_ms = load_started_at.elapsed().as_millis();
         let mut delivery = find_delivery(&record, channel_id)?.clone();
         if delivery.message_id.is_none() {
             if delivery.status == DeliveryStatus::Attempting {
                 return Err(DeliveryFailure::Reconciliation);
             }
             let attempt_id = new_attempt_id().map_err(|_| DeliveryFailure::Failed)?;
+            let attempt_started_at = Instant::now();
             self.storage
                 .update_notification(event_id, |current| {
                     let mut record = required_record(current)?;
@@ -625,7 +765,9 @@ impl NotificationService {
                 })
                 .await
                 .map_err(|_| DeliveryFailure::Failed)?;
+            let attempt_checkpoint_ms = attempt_started_at.elapsed().as_millis();
             let nonce = notification_nonce(&format!("{event_id}:{channel_id}"));
+            let action_started_at = Instant::now();
             let outcome = self
                 .perform_action(
                     event_id,
@@ -638,9 +780,11 @@ impl NotificationService {
                 )
                 .await
                 .map_err(|_| DeliveryFailure::Failed)?;
+            let action_ms = action_started_at.elapsed().as_millis();
             let Some(message_id) = successful_message_id(outcome) else {
                 return Err(DeliveryFailure::Failed);
             };
+            let sent_started_at = Instant::now();
             let updated = self
                 .storage
                 .update_notification(event_id, |current| {
@@ -653,6 +797,10 @@ impl NotificationService {
                 })
                 .await
                 .map_err(|_| DeliveryFailure::Failed)?;
+            let sent_checkpoint_ms = sent_started_at.elapsed().as_millis();
+            eprintln!(
+                "Notification timing: event_id={event_id} stage=primary-sent channel_id={channel_id} load_ms={load_ms} attempt_checkpoint_ms={attempt_checkpoint_ms} action_ms={action_ms} sent_checkpoint_ms={sent_checkpoint_ms}"
+            );
             delivery = find_delivery(&updated, channel_id)?.clone();
         }
         if delivery.content.as_deref() != Some(final_content) {
@@ -660,6 +808,7 @@ impl NotificationService {
                 .message_id
                 .clone()
                 .ok_or(DeliveryFailure::Reconciliation)?;
+            let edit_started_at = Instant::now();
             let outcome = self
                 .perform_action(
                     event_id,
@@ -671,9 +820,11 @@ impl NotificationService {
                 )
                 .await
                 .map_err(|_| DeliveryFailure::Failed)?;
+            let edit_action_ms = edit_started_at.elapsed().as_millis();
             if !matches!(outcome, ActionOutcome::Success { .. }) {
                 return Err(DeliveryFailure::Failed);
             }
+            let edit_checkpoint_started_at = Instant::now();
             self.storage
                 .update_notification(event_id, |current| {
                     let mut record = required_record(current)?;
@@ -683,13 +834,24 @@ impl NotificationService {
                 })
                 .await
                 .map_err(|_| DeliveryFailure::Failed)?;
+            eprintln!(
+                "Notification timing: event_id={event_id} stage=primary-edited channel_id={channel_id} load_ms={load_ms} action_ms={edit_action_ms} checkpoint_ms={} duration_ms={}",
+                edit_checkpoint_started_at.elapsed().as_millis(),
+                primary_started_at.elapsed().as_millis()
+            );
         }
         Ok(())
     }
 
     async fn details(&self, event_id: &str) -> Result<Vec<String>, NotificationError> {
+        let details_started_at = Instant::now();
         let record = self.load_record(event_id).await.map_err(delivery_error)?;
         if let Some(contents) = record.detail_contents {
+            eprintln!(
+                "Notification timing: event_id={event_id} stage=details-cache-hit duration_ms={} detail_count={}",
+                details_started_at.elapsed().as_millis(),
+                contents.len()
+            );
             return Ok(contents);
         }
         let source = record
@@ -711,11 +873,14 @@ impl NotificationService {
                 Ok((*data_type, file.path.clone(), file.hash.clone()))
             })
             .collect::<Result<Vec<_>, NotificationError>>()?;
+        let generation_started_at = Instant::now();
         let contents = self
             .skd
             .notification_details(&source.before_ref, &source.after_ref, &files, detected_at)
             .await
             .map_err(|error| NotificationError::detail("details-unavailable", error))?;
+        let generation_ms = generation_started_at.elapsed().as_millis();
+        let persist_started_at = Instant::now();
         let saved = self
             .storage
             .update_notification(event_id, |current| {
@@ -727,33 +892,47 @@ impl NotificationService {
             })
             .await
             .map_err(storage_failure)?;
-        Ok(saved.detail_contents.unwrap_or(contents))
+        let result = saved.detail_contents.unwrap_or(contents);
+        eprintln!(
+            "Notification timing: event_id={event_id} stage=details-generated generation_ms={generation_ms} persist_ms={} duration_ms={} detail_count={}",
+            persist_started_at.elapsed().as_millis(),
+            details_started_at.elapsed().as_millis(),
+            result.len()
+        );
+        Ok(result)
     }
 
-    async fn deliver_follow_up(
+    async fn deliver_follow_up_step(
         &self,
         event_id: &str,
         channel_id: &str,
         index: usize,
+        detail_count: usize,
         content: &str,
-    ) -> Result<(), DeliveryFailure> {
+        previous: Option<&CompletedFollowUp>,
+    ) -> Result<Option<CompletedFollowUp>, DeliveryFailure> {
+        let step_started_at = Instant::now();
+        let attempt_id = new_attempt_id().map_err(|_| DeliveryFailure::Failed)?;
+        let checkpoint_started_at = Instant::now();
+        let attempt_id_for_update = attempt_id.clone();
+        let previous = previous.cloned();
         let record = self
             .storage
             .update_notification(event_id, |current| {
                 let mut record = required_record(current)?;
-                let length = record
-                    .detail_contents
-                    .as_ref()
-                    .ok_or_else(|| StorageError::new("missing-details"))?
-                    .len();
-                let delivery = find_delivery_mut(&mut record, channel_id)?;
-                delivery
-                    .follow_ups
-                    .get_or_insert_with(|| vec![DeliveryPart::pending(); length]);
+                checkpoint_follow_up(
+                    &mut record,
+                    channel_id,
+                    index,
+                    detail_count,
+                    &attempt_id_for_update,
+                    previous.as_ref(),
+                )?;
                 Ok(record)
             })
             .await
             .map_err(|_| DeliveryFailure::Failed)?;
+        let checkpoint_ms = checkpoint_started_at.elapsed().as_millis();
         let part = find_delivery(&record, channel_id)?
             .follow_ups
             .as_ref()
@@ -761,25 +940,22 @@ impl NotificationService {
             .ok_or(DeliveryFailure::Failed)?
             .clone();
         if part.status == DeliveryStatus::Sent {
-            return Ok(());
+            eprintln!(
+                "Notification timing: event_id={event_id} stage=detail-skip channel_id={channel_id} detail_index={} checkpoint_ms={checkpoint_ms} reason=already-sent",
+                index + 1
+            );
+            return Ok(None);
         }
-        if part.status == DeliveryStatus::Attempting {
+        if part.status != DeliveryStatus::Attempting
+            || part.attempt_id.as_deref() != Some(attempt_id.as_str())
+        {
+            eprintln!(
+                "Notification timing: event_id={event_id} stage=detail-stop channel_id={channel_id} detail_index={} checkpoint_ms={checkpoint_ms} reason=reconciliation",
+                index + 1
+            );
             return Err(DeliveryFailure::Reconciliation);
         }
-        let attempt_id = new_attempt_id().map_err(|_| DeliveryFailure::Failed)?;
-        self.storage
-            .update_notification(event_id, |current| {
-                let mut record = required_record(current)?;
-                let part = find_follow_up_mut(&mut record, channel_id, index)?;
-                if part.status != DeliveryStatus::Pending {
-                    return Err(StorageError::new("delivery-already-updated"));
-                }
-                part.status = DeliveryStatus::Attempting;
-                part.attempt_id = Some(attempt_id);
-                Ok(record)
-            })
-            .await
-            .map_err(|_| DeliveryFailure::Failed)?;
+        let action_started_at = Instant::now();
         let nonce = notification_nonce(&format!("{event_id}:{channel_id}:detail:{index}"));
         let outcome = self
             .perform_action(
@@ -793,20 +969,43 @@ impl NotificationService {
             )
             .await
             .map_err(|_| DeliveryFailure::Failed)?;
+        let action_ms = action_started_at.elapsed().as_millis();
         let Some(message_id) = successful_message_id(outcome) else {
             return Err(DeliveryFailure::Failed);
         };
+        eprintln!(
+            "Notification timing: event_id={event_id} stage=detail-sent channel_id={channel_id} detail_index={} checkpoint_ms={checkpoint_ms} action_ms={action_ms} duration_ms={}",
+            index + 1,
+            step_started_at.elapsed().as_millis()
+        );
+        Ok(Some(CompletedFollowUp {
+            index,
+            attempt_id,
+            message_id,
+            content: content.to_owned(),
+        }))
+    }
+
+    async fn complete_follow_up(
+        &self,
+        event_id: &str,
+        channel_id: &str,
+        completed: &CompletedFollowUp,
+    ) -> Result<(), DeliveryFailure> {
+        let checkpoint_started_at = Instant::now();
         self.storage
             .update_notification(event_id, |current| {
                 let mut record = required_record(current)?;
-                let part = find_follow_up_mut(&mut record, channel_id, index)?;
-                part.status = DeliveryStatus::Sent;
-                part.message_id = Some(message_id);
-                part.content = Some(content.to_owned());
+                apply_completed_follow_up(&mut record, channel_id, completed)?;
                 Ok(record)
             })
             .await
             .map_err(|_| DeliveryFailure::Failed)?;
+        eprintln!(
+            "Notification timing: event_id={event_id} stage=detail-checkpoint channel_id={channel_id} detail_index={} duration_ms={}",
+            completed.index + 1,
+            checkpoint_started_at.elapsed().as_millis()
+        );
         Ok(())
     }
 
@@ -971,6 +1170,54 @@ fn find_follow_up_mut<'a>(
         .ok_or_else(|| StorageError::new("missing-follow-up"))
 }
 
+fn checkpoint_follow_up(
+    record: &mut EventRecord,
+    channel_id: &str,
+    index: usize,
+    detail_count: usize,
+    attempt_id: &str,
+    previous: Option<&CompletedFollowUp>,
+) -> Result<(), StorageError> {
+    let length = record
+        .detail_contents
+        .as_ref()
+        .ok_or_else(|| StorageError::new("missing-details"))?
+        .len();
+    if length != detail_count {
+        return Err(StorageError::new("detail-count-mismatch"));
+    }
+    find_delivery_mut(record, channel_id)?
+        .follow_ups
+        .get_or_insert_with(|| vec![DeliveryPart::pending(); length]);
+    if let Some(previous) = previous {
+        apply_completed_follow_up(record, channel_id, previous)?;
+    }
+    let part = find_follow_up_mut(record, channel_id, index)?;
+    if part.status == DeliveryStatus::Pending {
+        part.status = DeliveryStatus::Attempting;
+        part.attempt_id = Some(attempt_id.to_owned());
+    }
+    Ok(())
+}
+
+fn apply_completed_follow_up(
+    record: &mut EventRecord,
+    channel_id: &str,
+    completed: &CompletedFollowUp,
+) -> Result<(), StorageError> {
+    let part = find_follow_up_mut(record, channel_id, completed.index)?;
+    if part.status == DeliveryStatus::Attempting
+        && part.attempt_id.as_deref() == Some(completed.attempt_id.as_str())
+    {
+        part.status = DeliveryStatus::Sent;
+        part.message_id = Some(completed.message_id.clone());
+        part.content = Some(completed.content.clone());
+    } else if part.status != DeliveryStatus::Sent {
+        return Err(StorageError::new("follow-up-state-mismatch"));
+    }
+    Ok(())
+}
+
 fn format_detection(
     event: &DetectionEvent,
     include_types: bool,
@@ -1117,6 +1364,13 @@ fn storage_failure(error: StorageError) -> NotificationError {
     NotificationError::detail("delivery-failed", error)
 }
 
+fn notification_result_label(result: &Result<(), NotificationError>) -> &'static str {
+    match result {
+        Ok(()) => "ok",
+        Err(error) => error.code(),
+    }
+}
+
 fn delivery_error(error: DeliveryFailure) -> NotificationError {
     match error {
         DeliveryFailure::Failed => NotificationError::new("delivery-failed"),
@@ -1169,7 +1423,11 @@ async fn wait_for_shutdown(receiver: &mut watch::Receiver<bool>) {
 
 #[cfg(test)]
 mod tests {
-    use super::{DetectionEvent, format_detection};
+    use super::{
+        CompletedFollowUp, DeliveryRecord, DeliveryStatus, DetectionEvent, DetectionPhase,
+        EventRecord, apply_completed_follow_up, checkpoint_follow_up, format_detection,
+    };
+    use crate::storage::NotificationCategory;
     use crate::store_update::StorePlatform;
 
     #[test]
@@ -1180,5 +1438,55 @@ mod tests {
             format_detection(&event, true).unwrap(),
             "NEW Version\nios Ver.15.7.0\n検知時刻: 2026/09/26(土) 12:34:56\nKBC\nhttps://kbc-rakv0.vercel.app/pages/asset-explorer/?dataset=Local&version=150700&compare=150600&view=diff&layout=grid&offset=200\nApp Store\nhttps://apps.apple.com/jp/app/id547145938\n※反映まで少し時間がかかります"
         );
+    }
+
+    #[test]
+    fn checkpoints_previous_detail_with_the_next_attempt() {
+        let channel_id = "123456789012345678";
+        let mut record = EventRecord {
+            schema_version: 1,
+            event: DetectionEvent {
+                version: 1,
+                event_id: "skd:test".to_owned(),
+                category: NotificationCategory::Skd,
+                phase: DetectionPhase::Detected,
+                detected_at: "2026-09-26T03:34:56Z".to_owned(),
+                types: Vec::new(),
+                source: None,
+                store_update: None,
+            },
+            deliveries: vec![DeliveryRecord::pending(channel_id.to_owned())],
+            detail_contents: Some(vec!["first".to_owned(), "second".to_owned()]),
+        };
+        let first_attempt = "00000000-0000-4000-8000-000000000001";
+        checkpoint_follow_up(&mut record, channel_id, 0, 2, first_attempt, None).unwrap();
+        let first = CompletedFollowUp {
+            index: 0,
+            attempt_id: first_attempt.to_owned(),
+            message_id: "223456789012345678".to_owned(),
+            content: "first".to_owned(),
+        };
+        let second_attempt = "00000000-0000-4000-8000-000000000002";
+        checkpoint_follow_up(&mut record, channel_id, 1, 2, second_attempt, Some(&first)).unwrap();
+        let parts = record.deliveries[0].follow_ups.as_ref().unwrap();
+        assert_eq!(parts[0].status, DeliveryStatus::Sent);
+        assert_eq!(parts[1].status, DeliveryStatus::Attempting);
+
+        apply_completed_follow_up(
+            &mut record,
+            channel_id,
+            &CompletedFollowUp {
+                index: 1,
+                attempt_id: second_attempt.to_owned(),
+                message_id: "323456789012345678".to_owned(),
+                content: "second".to_owned(),
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            record.deliveries[0].follow_ups.as_ref().unwrap()[1].status,
+            DeliveryStatus::Sent
+        );
+        record.validate().unwrap();
     }
 }

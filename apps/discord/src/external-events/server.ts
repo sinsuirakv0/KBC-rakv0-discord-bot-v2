@@ -74,11 +74,18 @@ export function createEventUpdateServer(options: {
       return;
     }
 
+    const processingStartedAt = Date.now();
     try {
       await options.core.submitDetection(value);
+      console.log(
+        `Event update timing: status=accepted duration_ms=${Date.now() - processingStartedAt}`,
+      );
       reply(200, "accepted");
     } catch (error) {
       const code = notificationErrorCode(error);
+      console.warn(
+        `Event update timing: status=${code} duration_ms=${Date.now() - processingStartedAt}`,
+      );
       if (code === "invalid-event") {
         reply(400, code);
       } else if (code === "reconciliation-required") {
