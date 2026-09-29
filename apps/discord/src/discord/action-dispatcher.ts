@@ -137,10 +137,19 @@ function actionOrderingKey(action: CoreActionData): string {
     action.type === "resolveGuildMembers"
     || action.type === "createGuildRole"
     || action.type === "resolveAssignableRole"
+    || action.type === "resolveSendableChannel"
     || action.type === "addGuildMemberRole"
     || action.type === "removeGuildMemberRole"
   ) {
     return `guild:${action.guildId}`;
+  }
+  if (
+    action.type === "replyInteraction"
+    || action.type === "updateInteraction"
+    || action.type === "editInteractionReply"
+    || action.type === "showModal"
+  ) {
+    return `interaction:${action.interactionId}`;
   }
   return `channel:${action.channelId}`;
 }

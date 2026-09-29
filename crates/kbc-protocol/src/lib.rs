@@ -6,7 +6,7 @@ use std::fmt::{Display, Formatter};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-pub const PROTOCOL_VERSION: u32 = 5;
+pub const PROTOCOL_VERSION: u32 = 6;
 
 macro_rules! protocol_id {
     ($name:ident) => {
@@ -28,6 +28,122 @@ macro_rules! protocol_id {
 protocol_id!(EventId);
 protocol_id!(RequestId);
 protocol_id!(ActionId);
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct InteractionField {
+    pub custom_id: String,
+    pub values: Vec<String>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum ButtonStyle {
+    Primary,
+    Secondary,
+    Success,
+    Danger,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct SelectOption {
+    pub label: String,
+    pub value: String,
+    pub description: Option<String>,
+    pub default: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum MessageComponentData {
+    Button {
+        custom_id: String,
+        label: String,
+        style: ButtonStyle,
+        disabled: bool,
+    },
+    StringSelect {
+        custom_id: String,
+        placeholder: String,
+        options: Vec<SelectOption>,
+        min_values: u8,
+        max_values: u8,
+    },
+    ChannelSelect {
+        custom_id: String,
+        placeholder: String,
+        min_values: u8,
+        max_values: u8,
+    },
+    RoleSelect {
+        custom_id: String,
+        placeholder: String,
+        min_values: u8,
+        max_values: u8,
+    },
+    UserSelect {
+        custom_id: String,
+        placeholder: String,
+        min_values: u8,
+        max_values: u8,
+    },
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct MessageComponentRow {
+    pub components: Vec<MessageComponentData>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum ModalTextInputStyle {
+    Short,
+    Paragraph,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum ModalComponentData {
+    TextDisplay {
+        content: String,
+    },
+    TextInput {
+        custom_id: String,
+        label: String,
+        description: Option<String>,
+        style: ModalTextInputStyle,
+        required: bool,
+        value: Option<String>,
+        placeholder: Option<String>,
+        max_length: Option<u16>,
+    },
+    StringSelect {
+        custom_id: String,
+        label: String,
+        description: Option<String>,
+        options: Vec<SelectOption>,
+        min_values: u8,
+        max_values: u8,
+    },
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ModalDefinition {
+    pub custom_id: String,
+    pub title: String,
+    pub components: Vec<ModalComponentData>,
+}
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
@@ -73,6 +189,24 @@ pub enum CoreEventData {
         user_id: String,
         emoji: String,
     },
+    ComponentInteraction {
+        interaction_id: String,
+        guild_id: Option<String>,
+        channel_id: String,
+        user_id: String,
+        member_role_ids: Vec<String>,
+        custom_id: String,
+        values: Vec<String>,
+    },
+    ModalSubmit {
+        interaction_id: String,
+        guild_id: Option<String>,
+        channel_id: String,
+        user_id: String,
+        member_role_ids: Vec<String>,
+        custom_id: String,
+        fields: Vec<InteractionField>,
+    },
     ActionResult {
         action_id: ActionId,
         outcome: ActionOutcome,
@@ -95,6 +229,10 @@ pub enum ActionOutcome {
     },
     RoleResolved {
         role_id: String,
+        name: String,
+    },
+    ChannelResolved {
+        channel_id: String,
         name: String,
     },
     Failure {
@@ -135,6 +273,31 @@ pub enum CoreActionData {
     SendMessage {
         channel_id: String,
         content: String,
+    },
+    SendInteractiveMessage {
+        channel_id: String,
+        content: String,
+        rows: Vec<MessageComponentRow>,
+    },
+    ReplyInteraction {
+        interaction_id: String,
+        content: String,
+        ephemeral: bool,
+        rows: Vec<MessageComponentRow>,
+    },
+    UpdateInteraction {
+        interaction_id: String,
+        content: String,
+        rows: Vec<MessageComponentRow>,
+    },
+    EditInteractionReply {
+        interaction_id: String,
+        content: String,
+        rows: Vec<MessageComponentRow>,
+    },
+    ShowModal {
+        interaction_id: String,
+        modal: ModalDefinition,
     },
     SendNotification {
         channel_id: String,
@@ -183,6 +346,10 @@ pub enum CoreActionData {
     ResolveAssignableRole {
         guild_id: String,
         role_id: String,
+    },
+    ResolveSendableChannel {
+        guild_id: String,
+        channel_id: String,
     },
     AddGuildMemberRole {
         guild_id: String,

@@ -2,9 +2,13 @@
   Client,
   Events,
   GatewayIntentBits,
+  MessageFlags,
   Partials,
+  type Interaction,
   type Message,
+  type MessageComponentInteraction,
   type MessageReaction,
+  type ModalSubmitInteraction,
   type PartialMessageReaction,
   type PartialUser,
   type User,
@@ -23,10 +27,13 @@ import {
 } from "./event-dispatcher";
 import {
   createActionResultEvent,
+  createComponentInteractionEvent,
   createMessageCreateEvent,
+  createModalSubmitEvent,
   createReactionAddEvent,
   createReactionRemoveEvent,
 } from "./events";
+import { InteractionRegistry } from "./interaction-registry";
 
 const EVENT_BUFFER_CAPACITY = 64;
 const ACTION_CONCURRENCY = 3;
@@ -43,6 +50,7 @@ export interface DiscordAdapterCallbacks {
 export class DiscordAdapter {
   private readonly eventDispatcher: CoreEventDispatcher;
   private readonly actionDispatcher: CoreActionDispatcher;
+  private readonly interactionRegistry = new InteractionRegistry();
   private actionLoop: Promise<void> | undefined;
   private shutdownPromise: Promise<void> | undefined;
   private notificationServer: Server | undefined;
@@ -109,6 +117,7 @@ export class DiscordAdapter {
     this.client.on(Events.MessageCreate, this.handleMessageCreate);
     this.client.on(Events.MessageReactionAdd, this.handleReactionAdd);
     this.client.on(Events.MessageReactionRemove, this.handleReactionRemove);
+    this.client.on(Events.InteractionCreate, this.handleInteractionCreate);
     this.actionLoop = this.consumeActions().catch((error: unknown) => {
       this.fail(error);
     });
@@ -190,8 +199,82 @@ export class DiscordAdapter {
     this.dispatchEvent(createReactionRemoveEvent(reaction, user));
   };
 
+  private readonly handleInteractionCreate = (interaction: Interaction): void => {
+    if (
+      this.isStopping
+      || !(interaction.isMessageComponent() || interaction.isModalSubmit())
+      || !interaction.customId.startsWith("settings:")
+    ) {
+      return;
+    }
+    if (interaction.isModalSubmit()) {
+      void this.handleModalSubmit(interaction);
+      return;
+    }
+    if (shouldDeferComponent(interaction.customId)) {
+      void this.handleDeferredComponent(interaction);
+      return;
+    }
+    if (!this.interactionRegistry.register(interaction)) {
+      void interaction.reply({
+        content: "設定処理が混み合っています。時間をおいて再度お試しください。",
+        flags: MessageFlags.Ephemeral,
+      }).catch((error: unknown) => this.fail(error));
+      return;
+    }
+    this.dispatchInteraction(
+      createComponentInteractionEvent(interaction),
+      interaction.id,
+    );
+  };
+
+  private async handleDeferredComponent(
+    interaction: MessageComponentInteraction,
+  ): Promise<void> {
+    try {
+      await interaction.deferUpdate();
+      if (!this.interactionRegistry.register(interaction)) {
+        await interaction.editReply({
+          content: "設定処理が混み合っています。時間をおいて再度お試しください。",
+          components: [],
+        });
+        return;
+      }
+      this.dispatchInteraction(
+        createComponentInteractionEvent(interaction),
+        interaction.id,
+      );
+    } catch (error) {
+      this.fail(error);
+    }
+  }
+
+  private async handleModalSubmit(
+    interaction: ModalSubmitInteraction,
+  ): Promise<void> {
+    try {
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+      if (!this.interactionRegistry.register(interaction)) {
+        await interaction.editReply(
+          "設定処理が混み合っています。時間をおいて再度お試しください。",
+        );
+        return;
+      }
+      this.dispatchInteraction(createModalSubmitEvent(interaction), interaction.id);
+    } catch (error) {
+      this.fail(error);
+    }
+  }
+
   private dispatchEvent(event: CoreEvent): void {
     void this.eventDispatcher.submit(event).catch((error: unknown) => {
+      this.fail(error);
+    });
+  }
+
+  private dispatchInteraction(event: CoreEvent, interactionId: string): void {
+    void this.eventDispatcher.submit(event).catch((error: unknown) => {
+      this.interactionRegistry.remove(interactionId);
       this.fail(error);
     });
   }
@@ -218,6 +301,7 @@ export class DiscordAdapter {
         this.client,
         action.action,
         this.config.outgoingMessagePrefix,
+        this.interactionRegistry,
       );
     } catch (error) {
       this.callbacks.onActionError(action.actionId, error);
@@ -254,6 +338,7 @@ export class DiscordAdapter {
     this.client.off(Events.MessageCreate, this.handleMessageCreate);
     this.client.off(Events.MessageReactionAdd, this.handleReactionAdd);
     this.client.off(Events.MessageReactionRemove, this.handleReactionRemove);
+    this.client.off(Events.InteractionCreate, this.handleInteractionCreate);
     this.client.destroy();
     this.actionDispatcher.close();
     this.eventDispatcher.close();
@@ -272,6 +357,14 @@ export class DiscordAdapter {
       throw shutdownError;
     }
   }
+}
+
+function shouldDeferComponent(customId: string): boolean {
+  return customId === "settings:notification-category"
+    || customId.startsWith("settings:notification-page:")
+    || customId === "settings:roles"
+    || customId === "settings:maintainers"
+    || customId.startsWith("settings:maintainer-page:");
 }
 
 function closeServer(server: Server): Promise<void> {

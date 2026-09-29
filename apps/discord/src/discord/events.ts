@@ -2,11 +2,14 @@
 
 import type {
   Message,
+  MessageComponentInteraction,
   MessageReaction,
+  ModalSubmitInteraction,
   PartialMessageReaction,
   PartialUser,
   User,
 } from "discord.js";
+import { ComponentType } from "discord.js";
 
 import {
   PROTOCOL_VERSION,
@@ -52,6 +55,48 @@ export function createReactionRemoveEvent(
   return createReactionEvent("reactionRemove", reaction, user);
 }
 
+export function createComponentInteractionEvent(
+  interaction: MessageComponentInteraction,
+): CoreEvent {
+  return createEvent({
+    type: "componentInteraction",
+    interactionId: interaction.id,
+    guildId: interaction.guildId,
+    channelId: interaction.channelId,
+    userId: interaction.user.id,
+    memberRoleIds: getMemberRoleIds(interaction.member),
+    customId: interaction.customId,
+    values: interaction.isAnySelectMenu() ? [...interaction.values] : [],
+  });
+}
+
+export function createModalSubmitEvent(
+  interaction: ModalSubmitInteraction,
+): CoreEvent {
+  if (!interaction.channelId) {
+    throw new Error("Settings modal submission has no channel");
+  }
+  const fields = [...interaction.fields.fields.values()].flatMap((field) => {
+    if (field.type === ComponentType.TextInput) {
+      return [{ customId: field.customId, values: [field.value] }];
+    }
+    if (field.type === ComponentType.StringSelect) {
+      return [{ customId: field.customId, values: [...field.values] }];
+    }
+    return [];
+  });
+  return createEvent({
+    type: "modalSubmit",
+    interactionId: interaction.id,
+    guildId: interaction.guildId,
+    channelId: interaction.channelId,
+    userId: interaction.user.id,
+    memberRoleIds: getMemberRoleIds(interaction.member),
+    customId: interaction.customId,
+    fields,
+  });
+}
+
 function createReactionEvent(
   type: "reactionAdd" | "reactionRemove",
   reaction: MessageReaction | PartialMessageReaction,
@@ -81,4 +126,17 @@ export function createActionResultEvent(
     },
     action.requestId,
   );
+}
+
+function getMemberRoleIds(
+  member:
+    | MessageComponentInteraction["member"]
+    | ModalSubmitInteraction["member"],
+): string[] {
+  if (!member) {
+    return [];
+  }
+  return "cache" in member.roles
+    ? [...member.roles.cache.keys()]
+    : [...member.roles];
 }
