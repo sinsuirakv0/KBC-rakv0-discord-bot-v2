@@ -24,10 +24,14 @@ Command解析、Session状態、再試行Policy、Domain LogicをTypeScriptへ�
 - `messageCreate` → `CoreEvent.messageCreate`
 - `messageReactionAdd` → `CoreEvent.reactionAdd`
 - `messageReactionRemove` → `CoreEvent.reactionRemove`
+- Button・Select → `CoreEvent.componentInteraction`
+- Modal送信 → `CoreEvent.modalSubmit`
 
 Bot自身を含むBot userのEventは除外する。Discord SnowflakeはStringのまま渡し、Discord Object自体はCoreへ渡さない。
 
 Unicode Reactionは`discord.js`の`identifier`ではURL encodeされるため、Protocolへは生のemoji `name`を渡す。Custom emojiはGuild内で一意に判定できる`identifier`を維持する。Adapterは選択状態を持たず、この表現変換だけを担当する。
+
+設定UIのModal送信は即時にephemeral deferしてからCoreへ渡す。Button・SelectはCoreの`showModal`またはMessage応答を初回応答とするが、Storage・Guild Member読込みを行う一覧画面は先にdefer updateする。未完了Interaction objectは応答Transportとして最大64件・15分TTLで保持し、設定状態や権限判断には使わない。
 
 ClientはGuild、Guild Members、Guild Message、Message Content、Guild ReactionのIntentを使う。Guild Membersは`o.maint maintainer list`でロール所属者を漏れなく解決するために必要であり、Developer Portal側でもServer Members Intentを有効にする。cacheにないMessageへのReactionもIDとして受け取れるよう、Message、Channel、Reactionのpartialを有効にする。DM用Intentは追加しない。
 
@@ -58,6 +62,7 @@ ActionはAdapter内の有限Dispatcherで実行する。
 - 実行中と待機中の合計: 最大16件
 - Channelを持つAction: `channelId`ごとにFIFO
 - `resolveGuildMembers`とRole操作: `guildId`ごとにFIFO
+- Interaction応答: `interactionId`ごとにFIFO
 
 同一Channelでは、複数返信の表示順、`clearReactions`後の編集・返信、通知の送信後編集を維持する必要があるため直列実行する。Session、Task Runtime、Notification ServiceがDiscord操作の結果に依存する後続Actionは、先行Actionの`actionResult`をCoreが受信してから生成される。したがって`ActionId`の対応を維持したまま、異なるChannelのActionは並行実行できる。
 
@@ -66,6 +71,9 @@ Dispatcherは待機中の先頭だけを機械的に実行せず、現在実行�
 | Core Action | Discord操作 | 成功時messageId |
 |---|---|---|
 | `sendMessage` | ChannelへMessage送信 | 送信Message ID |
+| `sendInteractiveMessage` | Component付きMessage送信 | 送信Message ID |
+| `replyInteraction` / `updateInteraction` / `editInteractionReply` | Interaction Message応答 | 応答Message ID |
+| `showModal` | Button・Select InteractionへModal表示 | なし |
 | `sendNotification` | nonceを強制してChannelへ通知送信 | 送信Message ID |
 | `editMessage` | Message編集 | なし |
 | `sendAttachment` | Bufferを添付して送信 | 送信Message ID |
@@ -75,6 +83,7 @@ Dispatcherは待機中の先頭だけを機械的に実行せず、現在実行�
 | `resolveGuildMembers` | 指定ユーザー・ロールIDに一致するGuild memberを有限件解決 | `membersResolved` |
 | `createGuildRole` | 権限ゼロの通知用Roleを作成 | `roleResolved` |
 | `resolveAssignableRole` | Roleが権限ゼロかつBot管理可能か確認 | `roleResolved` |
+| `resolveSendableChannel` | 同一Guild内でBotが送信可能なChannelか確認 | `channelResolved` |
 | `addGuildMemberRole` | 選択Reactionに対応するRoleをMemberへ付与 | `success` |
 | `removeGuildMemberRole` | 選択Reactionに対応するRoleをMemberから解除 | `success` |
 

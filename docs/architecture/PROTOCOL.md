@@ -27,18 +27,20 @@ requestId
 event
 ```
 
-現在のEvent Variantは次の4つとする。
+現在のEvent Variantは次の6つとする。
 
 - `messageCreate`
 - `reactionAdd`
 - `reactionRemove`
+- `componentInteraction`
+- `modalSubmit`
 - `actionResult`
 
 `messageCreate`とReaction Eventには、Discord Objectではなく必要なSnowflakeとplain dataだけを入れる。Discord Snowflakeは精度を失わないよう、すべてStringで保持する。`reactionRemove`は永続的な通知ロール選択パネルでロールを外すために使い、短期Sessionは`reactionAdd`だけを扱う。
 
 `actionResult`はTypeScriptがDiscord操作を終えた結果をCoreへ返すEventである。通常成功時は必要に応じて`messageId`を返し、Guild member解決時は有限な`membersResolved`を返す。失敗時は安定したcodeとretry可否だけを返す。内部例外やStack TraceはProtocolへ載せない。
 
-Button等は必要になるPhaseまで追加しない。ShutdownはEventではなくLifecycle APIとして扱う。
+`componentInteraction`はButton・Selectのcustom IDと選択値を、`modalSubmit`はModal fieldをplain dataとしてCoreへ渡す。Discord Interaction objectはProtocolへ渡さない。ShutdownはEventではなくLifecycle APIとして扱う。
 
 ## 3. Version 1のAction
 
@@ -51,9 +53,14 @@ requestId
 action
 ```
 
-現行Version 5のAction Variantは次の12個とする。
+現行Version 6のAction Variantは次の18個とする。
 
 - `sendMessage`
+- `sendInteractiveMessage`
+- `replyInteraction`
+- `updateInteraction`
+- `editInteractionReply`
+- `showModal`
 - `sendNotification`
 - `editMessage`
 - `sendAttachment`
@@ -63,6 +70,7 @@ action
 - `resolveGuildMembers`
 - `createGuildRole`
 - `resolveAssignableRole`
+- `resolveSendableChannel`
 - `addGuildMemberRole`
 - `removeGuildMemberRole`
 
@@ -106,7 +114,7 @@ Wire fieldはcamelCase、Variant識別子は`type`とする。生成されたTyp
 
 ## 6. Version互換性
 
-現在の`PROTOCOL_VERSION`は`5`である。Version 5では`reactionRemove`、通知Role操作Action、`roleResolved`、`sendNotification.allowedRoleIds`を追加したためVersionを上げた。
+現在の`PROTOCOL_VERSION`は`6`である。Version 6ではMessage Component・ModalのEvent/Action、送信可能Channel検査、`channelResolved`を追加したためVersionを上げた。
 
 AdapterはNative module読込時に`getRuntimeInfo()`を呼び、Rust CoreとAdapterのVersionが一致しなければ起動を失敗させる。
 

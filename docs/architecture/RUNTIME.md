@@ -92,7 +92,9 @@ messageCreate CoreEvent
 
 複数Actionの先頭IDは従来どおり`action:<eventId>`、2件目以降は`action:<eventId>:<連番>`とする。Action Queueが満杯なら各Actionの投入時に待機するため、複数返信でもbackpressureを維持する。
 
-現在登録されているCommandは、静的な`asset`、`home`、`ping`、`skb`、`skdsite`、`help`、外部データを使う`item`、`sale`、`gatya`、`eventdata`、非Motionの`ut`、`tut`、`st`、更新表示の`skd`、通知設定の`push`、全サーバー共通メンテナー設定とGuild別通知ロール設定の`maint`である。返信とHelpはContent Catalogから起動時に読み、各Commandへ必要な文字列だけを所有させる。Prefix外、未知Command、Guild限定CommandのDM入力ではActionを生成しない。`messageCreate`はCommand Runtimeへ、通知ロールパネルの`reactionAdd`/`reactionRemove`はRolePanelServiceへ、残りの`reactionAdd`と通常Commandの`actionResult`はSession Managerへ振り分ける。Task Runtime経由のDiscord照会結果と通知Actionの結果はそれぞれの待機元へ返す。
+現在登録されているCommandは、静的な`asset`、`home`、`ping`、`skb`、`skdsite`、`help`、外部データを使う`item`、`sale`、`gatya`、`eventdata`、非Motionの`ut`、`tut`、`st`、更新表示の`skd`、通知設定の`push`、全サーバー共通メンテナー設定とGuild別通知ロール設定の`maint`、Interaction設定UIの`settings`である。返信とHelpはContent Catalogから起動時に読み、各Commandへ必要な文字列だけを所有させる。Prefix外、未知Command、Guild限定CommandのDM入力ではActionを生成しない。`messageCreate`はCommand Runtimeへ、`componentInteraction`/`modalSubmit`はSettingsInteractionServiceへ、通知ロールパネルの`reactionAdd`/`reactionRemove`はRolePanelServiceへ、残りの`reactionAdd`と通常Commandの`actionResult`はSession Managerへ振り分ける。Task Runtime経由のDiscord照会結果と通知Actionの結果はそれぞれの待機元へ返す。
+
+設定Interactionは保存やGuild照会が別のModal表示を塞がないよう、Runtimeが管理する最大4件のTaskで処理する。上限到達時は新しいInteractionへ混雑案内を返し、無制限のTaskやQueueを作らない。Runtime終了時は進行中TaskのStorage操作が終わるまで回収する。
 
 RolePanelServiceはGuild設定に保存された単一のmessage IDと1〜9番のReactionだけをRole操作Actionへ変換する。永続パネルにはTTLがないためSession Managerへ登録せず、再起動後もStorage復元だけで動作する。パネル移動後はStorage上のmessage IDを先に新しいMessageへ切り替えるため、旧Messageの無効化に失敗しても旧ReactionからRole操作は発生しない。
 

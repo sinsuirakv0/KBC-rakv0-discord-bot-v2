@@ -51,6 +51,10 @@ GitHubのowner、repository、tokenは3つ揃っている場合だけ有効に�
 
 `o.maint role`、`o.maint pushsetting`、`o.push ... role:<ID>`、`o.push skd url <URL> add|del`は固定Bot管理者またはBotメンテナーが実行できる。通知用Roleの登録時はAdapterで権限ゼロ・Bot管理可能を確認する。選択肢からRoleを削除した場合は全Subscriptionのmention設定からも同じIDを除くが、既にMemberへ付与済みのRoleは一括解除しない。
 
+`o.settings`は同じ設定をButton・選択メニュー・Modalから変更する移行先である。通知先Modalは1つのSubscriptionとRole ID一覧を1回のGuild設定Writeで置き換え、スケジュール関連サイトURL Modalも1行1URLの一覧を1回のWriteで置き換える。通知Role・選択パネル操作は旧`o.maint`と共通Serviceを利用する。詳細は`docs/requirements/SETTINGS_UI.md`と`docs/decisions/INTERACTION_SETTINGS_UI_V1.md`に記録する。
+
+Modalを開くInteractionはDiscordの初回応答期限内に完了させる必要がある。権限とModal初期値には待機しないStorage snapshotを使い、別のWriteがLockを保持している間は待たずに再試行を案内する。一覧画面とModal送信は先にdeferするため、通常の非同期Storage APIを利用できる。
+
 Role選択パネルはGuildごとに1件だけ保存する。別Channelで再設置した場合は新Messageを正本として保存した後、旧MessageのReactionを全削除し「通知設定は移動しました」へ編集する。選択肢更新時は本文と番号Reactionを再構築する。
 
 ## NotificationService
