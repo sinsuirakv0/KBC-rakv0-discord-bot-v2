@@ -99,6 +99,7 @@ async function main(): Promise<void> {
       interactionId: "interaction:settings-open",
       guildId: "123456789012345678",
       channelId: "223456789012345678",
+      messageId: "323456789012345678",
       userId: "1447045405257760820",
       memberRoleIds: [],
       customId: "settings:open:1447045405257760820",

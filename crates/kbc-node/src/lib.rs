@@ -1,6 +1,6 @@
 ﻿//! Rust CoreをNode.jsへ公開する薄いN-API Bridge。
 
-use kbc_core::{AppRuntime, RuntimeConfig, RuntimeError, StorageConfig};
+use kbc_core::{AppRuntime, BotStatusConfig, RuntimeConfig, RuntimeError, StorageConfig};
 use kbc_protocol::{CoreEvent, PROTOCOL_VERSION, RuntimeInfo};
 use napi::{Error, Result, Status};
 use napi_derive::napi;
@@ -19,6 +19,12 @@ pub struct NativeRuntimeConfig {
     pub github_data_repository: Option<String>,
     pub github_data_branch: Option<String>,
     pub github_data_token: Option<String>,
+    pub northflank_api_token: Option<String>,
+    pub northflank_project_id: Option<String>,
+    pub northflank_service_id: Option<String>,
+    pub northflank_container_name: Option<String>,
+    pub bot_uptime_started_at: Option<String>,
+    pub node_version: Option<String>,
 }
 
 #[napi]
@@ -107,6 +113,20 @@ pub async fn create_core(config: Option<NativeRuntimeConfig>) -> Result<NativeCo
                 repository,
                 branch,
                 token,
+            });
+        }
+        if let (Some(api_token), Some(project_id), Some(service_id)) = (
+            config.northflank_api_token,
+            config.northflank_project_id,
+            config.northflank_service_id,
+        ) {
+            runtime_config.bot_status = Some(BotStatusConfig {
+                api_token,
+                project_id,
+                service_id,
+                container_name: config.northflank_container_name,
+                uptime_started_at: config.bot_uptime_started_at,
+                node_version: config.node_version,
             });
         }
     }

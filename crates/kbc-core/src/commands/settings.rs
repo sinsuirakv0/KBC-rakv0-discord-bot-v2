@@ -1175,6 +1175,7 @@ impl<'a> InteractionContext<'a> {
                 member_role_ids,
                 custom_id,
                 values,
+                ..
             } => Some(Self {
                 interaction_id,
                 guild_id: guild_id.as_deref(),

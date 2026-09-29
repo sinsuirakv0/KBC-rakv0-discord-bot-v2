@@ -1,5 +1,5 @@
-use std::error::Error;
-use std::fmt::{Display, Formatter};
+﻿use std::error::Error;
+use std::fmt::{Debug, Display, Formatter};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -12,6 +12,7 @@ use tokio::time::Instant;
 
 use crate::action_bus::ActionBus;
 use crate::command_runtime::{CommandActionBatch, CommandRuntime};
+use crate::commands::botstatus::BotStatusService;
 use crate::commands::settings::SettingsInteractionService;
 use crate::content::ContentCatalog;
 use crate::notification::{NotificationError, NotificationService};
@@ -29,9 +30,34 @@ pub const DEFAULT_HTTP_MAX_CONCURRENCY: usize = 4;
 pub const DEFAULT_HTTP_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 pub const DEFAULT_HTTP_MAX_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
 const SETTINGS_INTERACTION_CONCURRENCY: usize = 4;
+const BOT_STATUS_INTERACTION_CONCURRENCY: usize = 4;
 const MAX_HTTP_CONCURRENCY: usize = 64;
 const MAX_HTTP_REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
 const MAX_HTTP_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
+
+#[derive(Clone, Eq, PartialEq)]
+pub struct BotStatusConfig {
+    pub api_token: String,
+    pub project_id: String,
+    pub service_id: String,
+    pub container_name: Option<String>,
+    pub uptime_started_at: Option<String>,
+    pub node_version: Option<String>,
+}
+
+impl Debug for BotStatusConfig {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("BotStatusConfig")
+            .field("api_token", &"[redacted]")
+            .field("project_id", &self.project_id)
+            .field("service_id", &self.service_id)
+            .field("container_name", &self.container_name)
+            .field("uptime_started_at", &self.uptime_started_at)
+            .field("node_version", &self.node_version)
+            .finish()
+    }
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RuntimeConfig {
@@ -43,6 +69,7 @@ pub struct RuntimeConfig {
     pub http_request_timeout: Duration,
     pub http_max_response_bytes: usize,
     pub storage: Option<StorageConfig>,
+    pub bot_status: Option<BotStatusConfig>,
 }
 
 impl Default for RuntimeConfig {
@@ -56,6 +83,7 @@ impl Default for RuntimeConfig {
             http_request_timeout: DEFAULT_HTTP_REQUEST_TIMEOUT,
             http_max_response_bytes: DEFAULT_HTTP_MAX_RESPONSE_BYTES,
             storage: None,
+            bot_status: None,
         }
     }
 }
@@ -65,6 +93,7 @@ pub struct AppRuntime {
     action_bus: ActionBus,
     shutdown_sender: watch::Sender<bool>,
     notifications: Arc<NotificationService>,
+    bot_status: Arc<BotStatusService>,
     tasks: Arc<TaskRuntime>,
     worker: Mutex<Option<JoinHandle<()>>>,
     is_shutdown: AtomicBool,
@@ -100,7 +129,7 @@ impl AppRuntime {
             .map_err(|error| RuntimeError::Http(error.to_string()))?,
         );
         let storage = Arc::new(StorageService::new(config.storage, Arc::clone(&http)));
-        let clock = Arc::new(SystemClock);
+        let clock: Arc<dyn crate::services::Clock> = Arc::new(SystemClock);
         let (event_sender, event_receiver) = mpsc::channel(config.event_queue_capacity);
         let (action_bus, action_sender) = ActionBus::new(config.action_queue_capacity);
         let (shutdown_sender, shutdown_receiver) = watch::channel(false);
@@ -108,6 +137,14 @@ impl AppRuntime {
             action_sender.clone(),
             shutdown_receiver.clone(),
         ));
+        let bot_status = BotStatusService::start(
+            config.bot_status.clone(),
+            Arc::clone(&http),
+            Arc::clone(&storage),
+            Arc::clone(&tasks),
+            Arc::clone(&clock),
+            shutdown_receiver.clone(),
+        );
         let role_settings = Arc::new(NotificationRoleSettingsService::new(
             Arc::clone(&storage),
             Arc::clone(&tasks),
@@ -115,10 +152,11 @@ impl AppRuntime {
         let command_runtime = CommandRuntime::new(
             &content,
             Arc::clone(&http),
-            clock,
+            Arc::clone(&clock),
             Arc::clone(&storage),
             Arc::clone(&tasks),
             Arc::clone(&role_settings),
+            Arc::clone(&bot_status),
             config.ffmpeg_path,
         )
         .map_err(|error| RuntimeError::CommandRegistration(error.to_string()))?;
@@ -133,6 +171,7 @@ impl AppRuntime {
         let worker = tokio::spawn(run_worker(
             command_runtime,
             settings,
+            Arc::clone(&bot_status),
             role_panel,
             event_receiver,
             action_sender,
@@ -144,6 +183,7 @@ impl AppRuntime {
             action_bus,
             shutdown_sender,
             notifications,
+            bot_status,
             tasks,
             worker: Mutex::new(Some(worker)),
             is_shutdown: AtomicBool::new(false),
@@ -225,6 +265,7 @@ impl AppRuntime {
             .shutdown()
             .await
             .map_err(|error| RuntimeError::NotificationWorkerJoin(error.to_string()))?;
+        self.bot_status.shutdown().await;
         self.tasks.shutdown().await?;
 
         Ok(())
@@ -338,6 +379,7 @@ fn validate_range(setting: &'static str, value: u128, maximum: u128) -> Result<(
 async fn run_worker(
     command_runtime: CommandRuntime,
     settings: SettingsInteractionService,
+    bot_status: Arc<BotStatusService>,
     role_panel: RolePanelService,
     mut event_receiver: mpsc::Receiver<CoreEvent>,
     action_sender: mpsc::Sender<CoreAction>,
@@ -345,17 +387,25 @@ async fn run_worker(
 ) {
     let mut session_manager = SessionManager::new(DEFAULT_MAX_SESSIONS);
     let mut settings_tasks = JoinSet::new();
+    let mut bot_status_tasks = JoinSet::new();
     loop {
         let next_expiration = session_manager.next_expiration();
         let event = tokio::select! {
             biased;
             _ = wait_for_shutdown(&mut shutdown_receiver) => {
                 drain_settings_tasks(&mut settings_tasks).await;
+                drain_bot_status_tasks(&mut bot_status_tasks).await;
                 return;
             },
             result = settings_tasks.join_next(), if !settings_tasks.is_empty() => {
                 if let Some(Err(error)) = result {
                     eprintln!("Settings interaction task failed: {error}");
+                }
+                continue;
+            },
+            result = bot_status_tasks.join_next(), if !bot_status_tasks.is_empty() => {
+                if let Some(Err(error)) = result {
+                    eprintln!("Bot status interaction task failed: {error}");
                 }
                 continue;
             },
@@ -377,8 +427,20 @@ async fn run_worker(
         };
         let Some(event) = event else {
             drain_settings_tasks(&mut settings_tasks).await;
+            drain_bot_status_tasks(&mut bot_status_tasks).await;
             return;
         };
+        if BotStatusService::handles_event(&event) {
+            if bot_status_tasks.len() >= BOT_STATUS_INTERACTION_CONCURRENCY {
+                bot_status.handle_event(&event).await;
+                continue;
+            }
+            let bot_status = Arc::clone(&bot_status);
+            bot_status_tasks.spawn(async move {
+                bot_status.handle_event(&event).await;
+            });
+            continue;
+        }
         if SettingsInteractionService::handles_event(&event) {
             if settings_tasks.len() >= SETTINGS_INTERACTION_CONCURRENCY {
                 if let Some(action) = SettingsInteractionService::busy_action(&event) {
@@ -389,6 +451,7 @@ async fn run_worker(
                     );
                     if !send_actions(actions, &action_sender, &mut shutdown_receiver).await {
                         drain_settings_tasks(&mut settings_tasks).await;
+                        drain_bot_status_tasks(&mut bot_status_tasks).await;
                         return;
                     }
                 }
@@ -445,6 +508,14 @@ async fn drain_settings_tasks(tasks: &mut JoinSet<()>) {
     while let Some(result) = tasks.join_next().await {
         if let Err(error) = result {
             eprintln!("Settings interaction task failed during shutdown: {error}");
+        }
+    }
+}
+
+async fn drain_bot_status_tasks(tasks: &mut JoinSet<()>) {
+    while let Some(result) = tasks.join_next().await {
+        if let Err(error) = result {
+            eprintln!("Bot status interaction task failed during shutdown: {error}");
         }
     }
 }

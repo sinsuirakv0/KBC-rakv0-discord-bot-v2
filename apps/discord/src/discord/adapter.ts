@@ -92,6 +92,16 @@ export class DiscordAdapter {
             githubDataToken: config.githubData.token,
           }
         : {}),
+      ...(config.northflank
+        ? {
+            northflankApiToken: config.northflank.token,
+            northflankProjectId: config.northflank.projectId,
+            northflankServiceId: config.northflank.serviceId,
+            northflankContainerName: config.northflank.containerName,
+            botUptimeStartedAt: config.northflank.uptimeStartedAt,
+          }
+        : {}),
+      nodeVersion: process.version,
     });
     const client = new Client({
       intents: [
@@ -203,8 +213,23 @@ export class DiscordAdapter {
     if (
       this.isStopping
       || !(interaction.isMessageComponent() || interaction.isModalSubmit())
-      || !interaction.customId.startsWith("settings:")
+      || !isCoreInteraction(interaction.customId)
     ) {
+      return;
+    }
+    if (interaction.customId.startsWith("botstatus:")) {
+      if (!interaction.isMessageComponent()) {
+        return;
+      }
+      const ownerId = botStatusOwnerId(interaction.customId);
+      if (ownerId !== interaction.user.id) {
+        void interaction.reply({
+          content: "このステータス画面はコマンド実行者専用です。",
+          flags: MessageFlags.Ephemeral,
+        }).catch((error: unknown) => this.fail(error));
+        return;
+      }
+      void this.handleDeferredComponent(interaction);
       return;
     }
     if (interaction.isModalSubmit()) {
@@ -365,6 +390,14 @@ function shouldDeferComponent(customId: string): boolean {
     || customId === "settings:roles"
     || customId === "settings:maintainers"
     || customId.startsWith("settings:maintainer-page:");
+}
+
+function isCoreInteraction(customId: string): boolean {
+  return customId.startsWith("settings:") || customId.startsWith("botstatus:");
+}
+
+function botStatusOwnerId(customId: string): string | undefined {
+  return /^botstatus:(\d{17,20}):/.exec(customId)?.[1];
 }
 
 function closeServer(server: Server): Promise<void> {

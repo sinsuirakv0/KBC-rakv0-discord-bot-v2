@@ -6,7 +6,7 @@ use std::fmt::{Display, Formatter};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-pub const PROTOCOL_VERSION: u32 = 6;
+pub const PROTOCOL_VERSION: u32 = 7;
 
 macro_rules! protocol_id {
     ($name:ident) => {
@@ -98,6 +98,44 @@ pub enum MessageComponentData {
 #[serde(rename_all = "camelCase")]
 pub struct MessageComponentRow {
     pub components: Vec<MessageComponentData>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct MessageAttachment {
+    pub file_name: String,
+    pub content_type: Option<String>,
+    #[ts(type = "Uint8Array")]
+    pub data: Vec<u8>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct MessageEmbedField {
+    pub name: String,
+    pub value: String,
+    pub inline: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct MessageEmbed {
+    pub title: Option<String>,
+    pub description: Option<String>,
+    pub color: Option<u32>,
+    pub fields: Vec<MessageEmbedField>,
+    pub footer: Option<String>,
+    pub timestamp: Option<String>,
+    pub image_attachment: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct RichMessage {
+    pub content: Option<String>,
+    pub embeds: Vec<MessageEmbed>,
+    pub rows: Vec<MessageComponentRow>,
+    pub attachments: Vec<MessageAttachment>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
@@ -193,6 +231,7 @@ pub enum CoreEventData {
         interaction_id: String,
         guild_id: Option<String>,
         channel_id: String,
+        message_id: String,
         user_id: String,
         member_role_ids: Vec<String>,
         custom_id: String,
@@ -279,6 +318,10 @@ pub enum CoreActionData {
         content: String,
         rows: Vec<MessageComponentRow>,
     },
+    SendRichMessage {
+        channel_id: String,
+        message: RichMessage,
+    },
     ReplyInteraction {
         interaction_id: String,
         content: String,
@@ -295,6 +338,10 @@ pub enum CoreActionData {
         content: String,
         rows: Vec<MessageComponentRow>,
     },
+    EditRichInteractionReply {
+        interaction_id: String,
+        message: RichMessage,
+    },
     ShowModal {
         interaction_id: String,
         modal: ModalDefinition,
@@ -309,6 +356,11 @@ pub enum CoreActionData {
         channel_id: String,
         message_id: String,
         content: String,
+    },
+    EditRichMessage {
+        channel_id: String,
+        message_id: String,
+        message: RichMessage,
     },
     SendAttachment {
         channel_id: String,

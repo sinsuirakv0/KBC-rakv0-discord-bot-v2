@@ -19,7 +19,7 @@ mod task_runtime;
 
 pub use notification::NotificationError;
 pub use runtime::{
-    AppRuntime, DEFAULT_ACTION_QUEUE_CAPACITY, DEFAULT_EVENT_QUEUE_CAPACITY,
+    AppRuntime, BotStatusConfig, DEFAULT_ACTION_QUEUE_CAPACITY, DEFAULT_EVENT_QUEUE_CAPACITY,
     DEFAULT_HTTP_MAX_CONCURRENCY, DEFAULT_HTTP_MAX_RESPONSE_BYTES, DEFAULT_HTTP_REQUEST_TIMEOUT,
     MAX_QUEUE_CAPACITY, RuntimeConfig, RuntimeError,
 };

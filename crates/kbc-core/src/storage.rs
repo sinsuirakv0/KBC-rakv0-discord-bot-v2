@@ -21,6 +21,7 @@ use crate::store_update::{StorePlatform, valid_version};
 const MANIFEST_PATH: &str = "meta.json";
 const MAINTAINERS_PATH: &str = "config/maintainers.json";
 const STORE_VERSIONS_PATH: &str = "state/store-versions.json";
+const BOT_UPTIME_PATH: &str = "state/bot-uptime.json";
 const MAX_DOCUMENT_BYTES: usize = 256 * 1024;
 const MAX_DIRECTORY_FILES: usize = 999;
 pub(crate) const MAX_MAINTAINER_SUBJECTS: usize = 64;
@@ -158,6 +159,17 @@ impl StoreVersionState {
     }
 }
 
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct BotUptimeRecord {
+    pub(crate) schema_version: u8,
+    pub(crate) baseline_at: String,
+    pub(crate) accounted_through: String,
+    pub(crate) accumulated_seconds: u64,
+    #[serde(default)]
+    pub(crate) baseline_estimated: bool,
+}
+
 struct RepositoryFile {
     content: String,
     sha: String,
@@ -186,6 +198,60 @@ impl StorageService {
             http,
             state: Mutex::new(StorageState::default()),
         }
+    }
+
+    pub(crate) fn is_configured(&self) -> bool {
+        self.config.is_some()
+    }
+
+    pub(crate) async fn bot_uptime(&self) -> Result<Option<BotUptimeRecord>, StorageError> {
+        let mut state = self.state.lock().await;
+        self.ensure_initialized(&mut state).await?;
+        self.read_file(&mut state, BOT_UPTIME_PATH)
+            .await?
+            .map(|file| parse_bot_uptime(&file.content))
+            .transpose()
+    }
+
+    pub(crate) async fn set_bot_uptime(
+        &self,
+        record: &BotUptimeRecord,
+        process_started_at: &str,
+    ) -> Result<BotUptimeRecord, StorageError> {
+        validate_bot_uptime(record)?;
+        let process_started_at = chrono::DateTime::parse_from_rfc3339(process_started_at)
+            .map_err(|error| StorageError::detail("invalid-bot-uptime", error))?;
+        let mut state = self.state.lock().await;
+        self.ensure_initialized(&mut state).await?;
+        for attempt in 0..WRITE_ATTEMPTS {
+            let file = self.read_file(&mut state, BOT_UPTIME_PATH).await?;
+            let current = file
+                .as_ref()
+                .map(|file| parse_bot_uptime(&file.content))
+                .transpose()?;
+            let merged = merge_bot_uptime(current.as_ref(), record, process_started_at)?;
+            if current.as_ref() == Some(&merged) {
+                return Ok(merged);
+            }
+            let content = serde_json::to_string(&merged)
+                .map_err(|error| StorageError::detail("json-encode", error))?;
+            match self
+                .write_file(
+                    &mut state,
+                    BOT_UPTIME_PATH,
+                    &content,
+                    file.as_ref().map(|current| current.sha.as_str()),
+                )
+                .await
+            {
+                Ok(()) => return Ok(merged),
+                Err(error) if error.code() == "conflict" && attempt + 1 < WRITE_ATTEMPTS => {
+                    eprintln!("Bot uptime write conflicted; reloading the latest state");
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        Err(StorageError::new("conflict"))
     }
 
     pub(crate) async fn set_subscription(
@@ -1152,6 +1218,58 @@ fn parse_store_versions(content: &str) -> Result<StoreVersionState, StorageError
     Ok(versions)
 }
 
+fn parse_bot_uptime(content: &str) -> Result<BotUptimeRecord, StorageError> {
+    let record: BotUptimeRecord = serde_json::from_str(content.trim_start_matches('\u{feff}'))
+        .map_err(|error| StorageError::detail("invalid-bot-uptime", error))?;
+    validate_bot_uptime(&record)?;
+    Ok(record)
+}
+
+fn validate_bot_uptime(record: &BotUptimeRecord) -> Result<(), StorageError> {
+    let baseline = chrono::DateTime::parse_from_rfc3339(&record.baseline_at)
+        .map_err(|error| StorageError::detail("invalid-bot-uptime", error))?;
+    let accounted = chrono::DateTime::parse_from_rfc3339(&record.accounted_through)
+        .map_err(|error| StorageError::detail("invalid-bot-uptime", error))?;
+    if record.schema_version != 1 || accounted < baseline {
+        return Err(StorageError::new("invalid-bot-uptime"));
+    }
+    Ok(())
+}
+
+pub(crate) fn merge_bot_uptime(
+    current: Option<&BotUptimeRecord>,
+    candidate: &BotUptimeRecord,
+    process_started_at: chrono::DateTime<chrono::FixedOffset>,
+) -> Result<BotUptimeRecord, StorageError> {
+    let Some(current) = current else {
+        return Ok(candidate.clone());
+    };
+    if current.baseline_at != candidate.baseline_at {
+        return Err(StorageError::new("bot-uptime-baseline-conflict"));
+    }
+    let current_through = chrono::DateTime::parse_from_rfc3339(&current.accounted_through)
+        .map_err(|error| StorageError::detail("invalid-bot-uptime", error))?;
+    let candidate_through = chrono::DateTime::parse_from_rfc3339(&candidate.accounted_through)
+        .map_err(|error| StorageError::detail("invalid-bot-uptime", error))?;
+    if candidate_through <= current_through {
+        return Ok(current.clone());
+    }
+    let unaccounted_start = std::cmp::max(current_through, process_started_at);
+    let additional_seconds = candidate_through
+        .signed_duration_since(unaccounted_start)
+        .num_seconds()
+        .max(0) as u64;
+    Ok(BotUptimeRecord {
+        schema_version: 1,
+        baseline_at: current.baseline_at.clone(),
+        accounted_through: candidate.accounted_through.clone(),
+        accumulated_seconds: current
+            .accumulated_seconds
+            .saturating_add(additional_seconds),
+        baseline_estimated: current.baseline_estimated || candidate.baseline_estimated,
+    })
+}
+
 fn validate_store_versions(versions: &StoreVersionState) -> Result<(), StorageError> {
     if versions.schema_version != 1
         || versions
@@ -1434,5 +1552,39 @@ impl StorageError {
 impl Display for StorageError {
     fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
         write!(formatter, "storage error: {}", self.code)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use chrono::DateTime;
+
+    use super::*;
+
+    #[test]
+    fn merges_only_the_unaccounted_process_interval() {
+        let current = BotUptimeRecord {
+            schema_version: 1,
+            baseline_at: "2026-09-22T03:07:19Z".to_owned(),
+            accounted_through: "2026-09-30T01:00:00Z".to_owned(),
+            accumulated_seconds: 1_000,
+            baseline_estimated: false,
+        };
+        let candidate = BotUptimeRecord {
+            schema_version: 1,
+            baseline_at: current.baseline_at.clone(),
+            accounted_through: "2026-09-30T01:01:00Z".to_owned(),
+            accumulated_seconds: 2_000,
+            baseline_estimated: false,
+        };
+
+        let merged = merge_bot_uptime(
+            Some(&current),
+            &candidate,
+            DateTime::parse_from_rfc3339("2026-09-30T00:59:30Z").unwrap(),
+        )
+        .unwrap();
+
+        assert_eq!(merged.accumulated_seconds, 1_060);
     }
 }

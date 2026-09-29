@@ -1,5 +1,6 @@
 ﻿//! 組み込みCommandを登録する。
 
+pub(crate) mod botstatus;
 pub(crate) mod common;
 mod eventdata;
 mod gatya;
@@ -24,6 +25,7 @@ use crate::notification_role_settings::NotificationRoleSettingsService;
 use crate::services::{Clock, HttpService};
 use crate::storage::StorageService;
 use crate::task_runtime::TaskRuntime;
+use botstatus::{BotStatusCommand, BotStatusService};
 use eventdata::EventDataCommand;
 use gatya::{GatyaCommand, RegisteredGatyaDataSource};
 use help::HelpCommand;
@@ -45,6 +47,7 @@ pub(crate) fn built_in_commands(
     storage: Arc<StorageService>,
     tasks: Arc<TaskRuntime>,
     role_settings: Arc<NotificationRoleSettingsService>,
+    bot_status: Arc<BotStatusService>,
     ffmpeg_path: Option<PathBuf>,
 ) -> Result<Vec<Box<dyn Command>>, MissingCommandContent> {
     let mut commands: Vec<Box<dyn Command>> = content
@@ -78,6 +81,10 @@ pub(crate) fn built_in_commands(
         settings_help,
         Arc::clone(&storage),
     )));
+    let bot_status_help = content
+        .help("botstatus")
+        .ok_or(MissingCommandContent::CommandHelp("botstatus"))?;
+    commands.push(Box::new(BotStatusCommand::new(bot_status_help, bot_status)));
     let item_help = content
         .help("item")
         .ok_or(MissingCommandContent::CommandHelp("item"))?;

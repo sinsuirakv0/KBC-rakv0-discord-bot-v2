@@ -13,6 +13,13 @@
     port: number;
     host: string;
   };
+  northflank?: {
+    token: string;
+    projectId: string;
+    serviceId: string;
+    containerName?: string;
+    uptimeStartedAt?: string;
+  };
 }
 
 import ffmpegStaticPath from "ffmpeg-static";
@@ -59,6 +66,40 @@ export function loadDiscordAdapterConfig(
   if (eventUpdateSecret && !githubDataOwner) {
     throw new Error("GitHub data storage is required for event updates.");
   }
+  const northflankToken = environment.NORTHFLANK_API_TOKEN?.trim();
+  const explicitNorthflankProjectId = environment.NORTHFLANK_PROJECT_ID?.trim();
+  const explicitNorthflankServiceId = environment.NORTHFLANK_SERVICE_ID?.trim();
+  const northflankProjectId = (
+    explicitNorthflankProjectId || environment.NF_PROJECT_ID
+  )?.trim();
+  const northflankServiceId = (
+    explicitNorthflankServiceId || environment.NF_OBJECT_ID
+  )?.trim();
+  const hasNorthflank = Boolean(
+    northflankToken
+      || explicitNorthflankProjectId
+      || explicitNorthflankServiceId,
+  );
+  if (
+    hasNorthflank
+    && (!northflankToken || !northflankProjectId || !northflankServiceId)
+  ) {
+    throw new Error(
+      "NORTHFLANK_API_TOKEN, project ID and service ID are required together.",
+    );
+  }
+  if (
+    hasNorthflank
+    && northflankProjectId
+    && (!validNorthflankId(northflankProjectId)
+      || !validNorthflankId(northflankServiceId!))
+  ) {
+    throw new Error("Invalid Northflank project or service ID.");
+  }
+  const uptimeStartedAt = environment.BOT_UPTIME_STARTED_AT?.trim();
+  if (uptimeStartedAt && Number.isNaN(Date.parse(uptimeStartedAt))) {
+    throw new Error("BOT_UPTIME_STARTED_AT must be an ISO 8601 timestamp.");
+  }
 
   return {
     discordToken,
@@ -79,5 +120,18 @@ export function loadDiscordAdapterConfig(
           host: environment.EVENT_UPDATE_HOST?.trim() || "0.0.0.0",
         }
       : undefined,
+    northflank: northflankToken
+      ? {
+          token: northflankToken,
+          projectId: northflankProjectId!,
+          serviceId: northflankServiceId!,
+          containerName: environment.HOSTNAME?.trim() || undefined,
+          uptimeStartedAt,
+        }
+      : undefined,
   };
+}
+
+function validNorthflankId(value: string): boolean {
+  return /^[A-Za-z][A-Za-z0-9-]{2,53}$/.test(value);
 }

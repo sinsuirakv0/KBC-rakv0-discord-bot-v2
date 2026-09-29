@@ -1,4 +1,4 @@
-import { resolve } from "node:path";
+﻿import { resolve } from "node:path";
 
 import { PROTOCOL_VERSION } from "./index";
 import type { CoreAction, CoreEvent, RuntimeInfo } from "./index";
@@ -15,6 +15,12 @@ export interface RuntimeConfig {
   githubDataRepository?: string;
   githubDataBranch?: string;
   githubDataToken?: string;
+  northflankApiToken?: string;
+  northflankProjectId?: string;
+  northflankServiceId?: string;
+  northflankContainerName?: string;
+  botUptimeStartedAt?: string;
+  nodeVersion?: string;
 }
 
 export interface NativeCore {

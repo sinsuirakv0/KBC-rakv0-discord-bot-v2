@@ -147,6 +147,7 @@ function actionOrderingKey(action: CoreActionData): string {
     action.type === "replyInteraction"
     || action.type === "updateInteraction"
     || action.type === "editInteractionReply"
+    || action.type === "editRichInteractionReply"
     || action.type === "showModal"
   ) {
     return `interaction:${action.interactionId}`;

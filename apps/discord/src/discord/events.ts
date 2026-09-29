@@ -63,6 +63,7 @@ export function createComponentInteractionEvent(
     interactionId: interaction.id,
     guildId: interaction.guildId,
     channelId: interaction.channelId,
+    messageId: interaction.message.id,
     userId: interaction.user.id,
     memberRoleIds: getMemberRoleIds(interaction.member),
     customId: interaction.customId,

@@ -6,6 +6,7 @@ import {
   MessageFlags,
   PermissionFlagsBits,
   TextInputStyle,
+  type APIEmbed,
   type Client,
   type Guild,
   type Role,
@@ -86,6 +87,13 @@ export async function executeCoreAction(
       });
       return success(message.id);
     }
+    case "sendRichMessage": {
+      const channel = await getSendableChannel(client, action.channelId);
+      const message = await channel.send(
+        createRichMessageOptions(action.message, outgoingMessagePrefix, false),
+      );
+      return success(message.id);
+    }
     case "replyInteraction": {
       const interaction = takeInteraction(
         interactionRegistry,
@@ -144,6 +152,16 @@ export async function executeCoreAction(
       });
       return success(message.id);
     }
+    case "editRichInteractionReply": {
+      const interaction = takeInteraction(
+        interactionRegistry,
+        action.interactionId,
+      );
+      const message = await interaction.editReply(
+        createRichMessageOptions(action.message, outgoingMessagePrefix, true),
+      );
+      return success(message.id);
+    }
     case "showModal": {
       const interaction = takeInteraction(
         interactionRegistry,
@@ -171,6 +189,14 @@ export async function executeCoreAction(
         content: `${outgoingMessagePrefix}${action.content}`,
         allowedMentions: { parse: [] },
       });
+      return success(null);
+    }
+    case "editRichMessage": {
+      const channel = await getSendableChannel(client, action.channelId);
+      await channel.messages.edit(
+        action.messageId,
+        createRichMessageOptions(action.message, outgoingMessagePrefix, true),
+      );
       return success(null);
     }
     case "sendAttachment": {
@@ -285,6 +311,46 @@ export async function executeCoreAction(
     default:
       return assertNever(action);
   }
+}
+
+type RichMessage = Extract<CoreActionData, {
+  type: "sendRichMessage";
+}>["message"];
+
+function createRichMessageOptions(
+  message: RichMessage,
+  outgoingMessagePrefix: string,
+  replaceAttachments: boolean,
+) {
+  const files = message.attachments.map((attachment) => ({
+    attachment: Buffer.from(attachment.data),
+    name: attachment.fileName,
+    contentType: attachment.contentType ?? undefined,
+  }));
+  return {
+    ...(message.content === null
+      ? {}
+      : { content: `${outgoingMessagePrefix}${message.content}` }),
+    embeds: message.embeds.map(createEmbed),
+    components: createMessageRows(message.rows),
+    allowedMentions: { parse: [] as never[] },
+    ...(files.length === 0 ? {} : { files }),
+    ...(replaceAttachments && files.length > 0 ? { attachments: [] } : {}),
+  };
+}
+
+function createEmbed(embed: RichMessage["embeds"][number]): APIEmbed {
+  return {
+    ...(embed.title === null ? {} : { title: embed.title }),
+    ...(embed.description === null ? {} : { description: embed.description }),
+    ...(embed.color === null ? {} : { color: embed.color }),
+    fields: embed.fields,
+    ...(embed.footer === null ? {} : { footer: { text: embed.footer } }),
+    ...(embed.timestamp === null ? {} : { timestamp: embed.timestamp }),
+    ...(embed.imageAttachment === null
+      ? {}
+      : { image: { url: `attachment://${embed.imageAttachment}` } }),
+  };
 }
 
 function takeInteraction(
