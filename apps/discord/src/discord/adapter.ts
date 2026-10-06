@@ -151,18 +151,20 @@ export class DiscordAdapter {
   };
 
   private startEventUpdates(): void {
-    const config = this.config.eventUpdate;
+    const config = this.config.eventUpdate ?? this.config.motionRender;
     if (!config || this.notificationServer) {
       return;
     }
     this.notificationServer = createEventUpdateServer({
-      secret: config.secret,
+      secret: this.config.eventUpdate?.secret,
+      motionSecret: this.config.motionRender?.secret,
       core: this.core,
-      isReady: () => this.client.isReady() && this.notificationsReady,
+      isReady: () => this.client.isReady() && (!this.config.eventUpdate || this.notificationsReady),
+      isMotionReady: () => this.client.isReady() && !this.isStopping,
     });
     this.notificationServer.on("error", (error: unknown) => this.fail(error));
     this.notificationServer.listen(config.port, config.host);
-    void this.prepareNotifications();
+    if (this.config.eventUpdate) void this.prepareNotifications();
   }
 
   private async prepareNotifications(): Promise<void> {

@@ -143,3 +143,5 @@ createCore(config?)
 Phase 2限定の`roundTripEvent()`は削除済みである。Protocol境界は実際のRuntime経路を通るSmokeで検証する。CommandごとのN-API関数は追加しない。
 
 外部更新通知はDiscord Eventではないため`CoreEvent`へ混在させない。通知機能では外部入力境界として`prepareNotifications()`と`submitDetection(value)`を追加した。TypeScriptはHTTP形式とSecretを検査し、Detection EventのDomain検証と配送判断はRust Coreが行う。
+
+2026-10-07、独立した代行Protocol v1として`submitMotion(JSON文字列)`、`motionStatus(id)`、`readMotionArtifact(id)`、`removeMotion(id)`を追加した。入力文字列はBridgeでJSONへ変換し、整数を保持する。成果は最大8MiBのN-API Bufferで返し、base64やDiscord Actionへ変換しない。既存Event / Actionのv7は維持する。[契約・容量・関数](../../crates/kbc-core/src/motion/docs/REMOTE.md)。

@@ -24,6 +24,10 @@ export interface RuntimeConfig {
 }
 
 export interface NativeCore {
+  submitMotion(request: string): Promise<void>;
+  motionStatus(id: string): Promise<{ protocolVersion: number; status: string } | null>;
+  readMotionArtifact(id: string): Promise<{ data: Buffer; fileName: string; contentType: string; durationMs?: number | null }>;
+  removeMotion(id: string): Promise<void>;
   submitEvent(event: CoreEvent): Promise<void>;
   prepareNotifications(): Promise<void>;
   submitDetection(value: unknown): Promise<void>;

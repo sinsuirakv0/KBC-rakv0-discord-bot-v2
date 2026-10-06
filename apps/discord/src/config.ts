@@ -13,6 +13,11 @@
     port: number;
     host: string;
   };
+  motionRender?: {
+    secret: string;
+    port: number;
+    host: string;
+  };
   northflank?: {
     token: string;
     projectId: string;
@@ -53,6 +58,10 @@ export function loadDiscordAdapterConfig(
     throw new Error("Invalid GitHub data repository.");
   }
   const eventUpdateSecret = environment.EVENT_UPDATE_SECRET?.trim();
+  const motionRenderSecret = environment.MOTION_RENDER_SECRET?.trim();
+  if (motionRenderSecret && !/^[\x21-\x7e]{32,256}$/.test(motionRenderSecret)) {
+    throw new Error("MOTION_RENDER_SECRET must contain 32-256 printable ASCII characters.");
+  }
   const eventUpdatePort = Number(
     environment.EVENT_UPDATE_PORT || environment.PORT || 3000,
   );
@@ -120,6 +129,10 @@ export function loadDiscordAdapterConfig(
           host: environment.EVENT_UPDATE_HOST?.trim() || "0.0.0.0",
         }
       : undefined,
+    motionRender: motionRenderSecret ? {
+      secret: motionRenderSecret, port: eventUpdatePort,
+      host: environment.EVENT_UPDATE_HOST?.trim() || "0.0.0.0",
+    } : undefined,
     northflank: northflankToken
       ? {
           token: northflankToken,

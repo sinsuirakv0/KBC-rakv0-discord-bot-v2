@@ -2,16 +2,20 @@
 import { createServer, type Server } from "node:http";
 
 import type { NativeCore } from "../protocol/native";
+import { createMotionHandler } from "./motion";
 
 const BODY_LIMIT_BYTES = 16 * 1024;
 const REQUEST_TIMEOUT_MS = 15_000;
 
 export function createEventUpdateServer(options: {
-  secret: string;
+  secret?: string;
+  motionSecret?: string;
+  isMotionReady?(): boolean;
   core: NativeCore;
   isReady(): boolean;
 }): Server {
-  const expectedSecret = Buffer.from(options.secret);
+  const expectedSecret = Buffer.from(options.secret ?? "");
+  const handleMotion = createMotionHandler(options.motionSecret, options.core, options.isMotionReady ?? options.isReady);
   const server = createServer(async (request, response) => {
     const reply = (status: number, result: string): void => {
       response.writeHead(status, { "Content-Type": "application/json" });
@@ -27,6 +31,7 @@ export function createEventUpdateServer(options: {
       reply(ready ? 200 : 503, ready ? "ready" : "unavailable");
       return;
     }
+    if (await handleMotion(request, response)) return;
     if (request.url !== "/event-update") {
       reply(404, "not-found");
       return;
@@ -40,7 +45,7 @@ export function createEventUpdateServer(options: {
       typeof suppliedHeader === "string" ? suppliedHeader : "",
     );
     if (
-      suppliedSecret.length !== expectedSecret.length ||
+      !options.secret || suppliedSecret.length !== expectedSecret.length ||
       !timingSafeEqual(suppliedSecret, expectedSecret)
     ) {
       reply(401, "unauthorized");

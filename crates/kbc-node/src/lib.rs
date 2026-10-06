@@ -32,6 +32,14 @@ pub struct NativeCore {
     runtime: AppRuntime,
 }
 
+#[napi(object)]
+pub struct NativeMotionArtifact {
+    pub data: napi::bindgen_prelude::Buffer,
+    pub file_name: String,
+    pub content_type: String,
+    pub duration_ms: Option<u32>,
+}
+
 #[napi]
 impl NativeCore {
     #[napi(js_name = "submitEvent")]
@@ -74,6 +82,41 @@ impl NativeCore {
             .submit_detection(value)
             .await
             .map_err(notification_error)
+    }
+
+    #[napi(js_name = "submitMotion")]
+    pub async fn submit_motion(&self, request: String) -> Result<()> {
+        let value =
+            serde_json::from_str(&request).map_err(|_| Error::from_reason("invalid-request"))?;
+        self.runtime
+            .submit_motion(value)
+            .await
+            .map_err(Error::from_reason)
+    }
+
+    #[napi(js_name = "motionStatus")]
+    pub async fn motion_status(&self, id: String) -> Result<Option<serde_json::Value>> {
+        Ok(self.runtime.motion_status(&id).await)
+    }
+
+    #[napi(js_name = "readMotionArtifact")]
+    pub async fn read_motion_artifact(&self, id: String) -> Result<NativeMotionArtifact> {
+        let artifact = self
+            .runtime
+            .read_motion_artifact(&id)
+            .await
+            .map_err(Error::from_reason)?;
+        Ok(NativeMotionArtifact {
+            data: artifact.data.into(),
+            file_name: artifact.file_name,
+            content_type: artifact.content_type,
+            duration_ms: artifact.duration_ms,
+        })
+    }
+
+    #[napi(js_name = "removeMotion")]
+    pub async fn remove_motion(&self, id: String) {
+        self.runtime.remove_motion(&id).await;
     }
 }
 
