@@ -17,6 +17,7 @@ mod storage;
 mod store_update;
 mod task_runtime;
 
+pub use motion::remote::MotionArtifact;
 pub use notification::NotificationError;
 pub use runtime::{
     AppRuntime, BotStatusConfig, DEFAULT_ACTION_QUEUE_CAPACITY, DEFAULT_EVENT_QUEUE_CAPACITY,

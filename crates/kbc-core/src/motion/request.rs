@@ -1,8 +1,8 @@
-//! `ut`と`tut`のMotion引数を有限な型付きRequestへ変換する。
+﻿//! `ut`と`tut`のMotion引数を有限な型付きRequestへ変換する。
 
 const MAX_VIDEO_FRAMES: usize = 900;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum MotionFormat {
     Png,
     Mp4,
@@ -19,7 +19,7 @@ impl MotionFormat {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(crate) enum MotionKind {
     Attack,
     Move,
@@ -38,7 +38,7 @@ impl MotionKind {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct FrameRange {
     pub(crate) start: u32,
     pub(crate) end: u32,
@@ -50,7 +50,7 @@ impl FrameRange {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct MotionSegment {
     pub(crate) motion: MotionKind,
     pub(crate) range: Option<FrameRange>,

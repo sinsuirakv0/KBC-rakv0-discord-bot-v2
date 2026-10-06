@@ -1,4 +1,4 @@
-//! `ut`と`tut`が共有する、有限なRemote snapshotとAsset存在確認を提供する。
+﻿//! `ut`と`tut`が共有する、有限なRemote snapshotとAsset存在確認を提供する。
 
 use std::collections::{HashMap, HashSet};
 use std::fmt::{Display, Formatter};
@@ -126,7 +126,7 @@ impl<T> CachedTextResource<T> {
 
 #[derive(Clone)]
 pub(crate) struct RemoteAssetSource {
-    base_url: &'static str,
+    base_url: String,
     ttl: Duration,
     http: Arc<HttpService>,
     existence: Arc<Mutex<HashMap<String, AssetExistence>>>,
@@ -139,9 +139,9 @@ struct AssetExistence {
 }
 
 impl RemoteAssetSource {
-    pub(crate) fn new(base_url: &'static str, ttl: Duration, http: Arc<HttpService>) -> Self {
+    pub(crate) fn new(base_url: impl Into<String>, ttl: Duration, http: Arc<HttpService>) -> Self {
         Self {
-            base_url,
+            base_url: base_url.into(),
             ttl,
             http,
             existence: Arc::new(Mutex::new(HashMap::new())),

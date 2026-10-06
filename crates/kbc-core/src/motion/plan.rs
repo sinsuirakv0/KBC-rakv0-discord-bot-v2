@@ -4,7 +4,8 @@ use std::collections::HashMap;
 
 use super::request::{MotionFormat, MotionKind, MotionSegment};
 
-#[derive(Clone)]
+#[derive(serde::Serialize, serde::Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct MotionPlan {
     pub(crate) format: MotionFormat,
     pub(crate) full: bool,

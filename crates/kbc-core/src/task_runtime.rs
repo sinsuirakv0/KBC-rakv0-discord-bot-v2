@@ -27,7 +27,7 @@ const STALL_TIMEOUT: Duration = Duration::from_secs(60);
 const ACTION_TIMEOUT: Duration = Duration::from_secs(30);
 const PROGRESS_INTERVAL: Duration = Duration::from_secs(2);
 const CANCELLATION_GRACE: Duration = Duration::from_secs(15);
-const MAX_ATTACHMENT_BYTES: u64 = 8 * 1024 * 1024;
+pub(crate) const MAX_ATTACHMENT_BYTES: u64 = 8 * 1024 * 1024;
 
 pub(crate) type TaskFuture =
     Pin<Box<dyn Future<Output = Result<TaskArtifact, TaskFailure>> + Send>>;
@@ -37,9 +37,10 @@ pub(crate) trait TaskJob: Send + 'static {
 }
 
 pub(crate) struct TaskArtifact {
-    path: PathBuf,
-    file_name: String,
-    content_type: Option<String>,
+    pub(crate) path: PathBuf,
+    pub(crate) file_name: String,
+    pub(crate) content_type: Option<String>,
+    pub(crate) duration_ms: Option<u32>,
     message: Option<String>,
 }
 
@@ -54,6 +55,7 @@ impl TaskArtifact {
             path,
             file_name: file_name.into(),
             content_type,
+            duration_ms: None,
             message,
         }
     }
@@ -156,8 +158,22 @@ impl Display for TaskSubmitError {
 
 struct QueuedTask {
     id: u64,
-    submission: TaskSubmission,
+    submission: QueuedSubmission,
     _slot: OwnedSemaphorePermit,
+}
+
+enum QueuedSubmission {
+    Discord(TaskSubmission),
+    External {
+        job: Box<dyn TaskJob>,
+        cancellation: CancellationToken,
+        completion: oneshot::Sender<ExternalOutcome>,
+    },
+}
+
+pub(crate) struct ExternalOutcome {
+    pub(crate) completed_at: Instant,
+    pub(crate) result: Result<TaskArtifact, TaskFailure>,
 }
 
 struct TaskShared {
@@ -200,6 +216,9 @@ impl TaskRuntime {
     }
 
     pub(crate) fn submit(&self, submission: TaskSubmission) -> Result<u64, TaskSubmitError> {
+        if self.shared.active.is_closed() || *self.shared.shutdown_receiver.borrow() {
+            return Err(TaskSubmitError::Unavailable);
+        }
         let slot = Arc::clone(&self.slots)
             .try_acquire_owned()
             .map_err(|_| TaskSubmitError::Busy)?;
@@ -207,11 +226,39 @@ impl TaskRuntime {
         self.submission_sender
             .try_send(QueuedTask {
                 id,
-                submission,
+                submission: QueuedSubmission::Discord(submission),
                 _slot: slot,
             })
             .map_err(|_| TaskSubmitError::Unavailable)?;
         Ok(id)
+    }
+
+    // 外部生成も通常Taskと同じ受付容量・描画枠・停止通知を使う。
+    pub(crate) fn submit_external(
+        &self,
+        job: Box<dyn TaskJob>,
+        cancellation: CancellationToken,
+    ) -> Result<(u64, oneshot::Receiver<ExternalOutcome>), TaskSubmitError> {
+        if self.shared.active.is_closed() || *self.shared.shutdown_receiver.borrow() {
+            return Err(TaskSubmitError::Unavailable);
+        }
+        let slot = Arc::clone(&self.slots)
+            .try_acquire_owned()
+            .map_err(|_| TaskSubmitError::Busy)?;
+        let id = self.next_task_id.fetch_add(1, Ordering::Relaxed);
+        let (completion, receiver) = oneshot::channel();
+        self.submission_sender
+            .try_send(QueuedTask {
+                id,
+                submission: QueuedSubmission::External {
+                    job,
+                    cancellation,
+                    completion,
+                },
+                _slot: slot,
+            })
+            .map_err(|_| TaskSubmitError::Unavailable)?;
+        Ok((id, receiver))
     }
 
     pub(crate) async fn handle_action_result(
@@ -312,6 +359,78 @@ async fn run_task(task: QueuedTask, shared: Arc<TaskShared>) {
         submission,
         _slot,
     } = task;
+    match submission {
+        QueuedSubmission::Discord(submission) => run_discord_task(id, submission, shared).await,
+        QueuedSubmission::External {
+            job,
+            cancellation,
+            completion,
+        } => {
+            let result = run_external_task(id, job, cancellation, &shared).await;
+            if result.is_err() {
+                cleanup_task_workspace(id).await;
+            }
+            let outcome = ExternalOutcome {
+                completed_at: Instant::now(),
+                result,
+            };
+            if completion.send(outcome).is_err() {
+                cleanup_task_workspace(id).await;
+            }
+        }
+    }
+}
+
+async fn run_external_task(
+    id: u64,
+    job: Box<dyn TaskJob>,
+    cancellation: CancellationToken,
+    shared: &TaskShared,
+) -> Result<TaskArtifact, TaskFailure> {
+    let queue_started = Instant::now();
+    let mut shutdown = shared.shutdown_receiver.clone();
+    let active = tokio::select! {
+        biased;
+        _ = wait_for_shutdown(&mut shutdown) => return Err(TaskFailure::new("", "runtime shutdown")),
+        _ = cancellation.cancelled() => return Err(TaskFailure::new("", "request cancelled")),
+        result = timeout(QUEUE_TIMEOUT, Arc::clone(&shared.active).acquire_owned()) =>
+            result.map_err(|_| TaskFailure::new("", "queue timeout"))?
+                .map_err(|_| TaskFailure::new("", "task runtime unavailable"))?,
+    };
+    let workspace = task_workspace(id);
+    tokio::fs::create_dir_all(&workspace)
+        .await
+        .map_err(|error| TaskFailure::new("", error.to_string()))?;
+    let (progress_sender, progress_receiver) = watch::channel(String::new());
+    let context = TaskContext {
+        workspace: Arc::new(workspace.clone()),
+        progress_sender,
+        cancellation: cancellation.clone(),
+        queue_wait: queue_started.elapsed(),
+    };
+    let artifact = supervise_job(
+        job.run(context),
+        progress_receiver,
+        cancellation,
+        shared,
+        None,
+    )
+    .await?;
+    let metadata = tokio::fs::metadata(&artifact.path)
+        .await
+        .map_err(|error| TaskFailure::new("", error.to_string()))?;
+    if artifact.path.parent() != Some(workspace.as_path())
+        || !metadata.is_file()
+        || metadata.len() == 0
+        || metadata.len() > MAX_ATTACHMENT_BYTES
+    {
+        return Err(TaskFailure::new("", "invalid artifact"));
+    }
+    drop(active);
+    Ok(artifact)
+}
+
+async fn run_discord_task(id: u64, submission: TaskSubmission, shared: Arc<TaskShared>) {
     let TaskSubmission {
         request_id,
         channel_id,
@@ -338,7 +457,18 @@ async fn run_task(task: QueuedTask, shared: Arc<TaskShared>) {
     let queue_started = Instant::now();
     let active = match timeout(QUEUE_TIMEOUT, Arc::clone(&shared.active).acquire_owned()).await {
         Ok(Ok(active)) => active,
-        Ok(Err(_)) => return,
+        Ok(Err(_)) => {
+            emit_terminal(
+                &shared,
+                id,
+                &request_id,
+                &channel_id,
+                &message_id,
+                "❌ 生成処理を利用できません。時間を置いて再実行してください",
+            )
+            .await;
+            return;
+        }
         Err(_) => {
             emit_terminal(
                 &shared,
@@ -384,10 +514,12 @@ async fn run_task(task: QueuedTask, shared: Arc<TaskShared>) {
         progress_receiver,
         cancellation,
         &shared,
-        id,
-        &request_id,
-        &channel_id,
-        &message_id,
+        Some(ProgressTarget {
+            task_id: id,
+            request_id: &request_id,
+            channel_id: &channel_id,
+            message_id: &message_id,
+        }),
     )
     .await;
 
@@ -436,16 +568,19 @@ async fn run_task(task: QueuedTask, shared: Arc<TaskShared>) {
     drop(active);
 }
 
-#[allow(clippy::too_many_arguments)]
+struct ProgressTarget<'a> {
+    task_id: u64,
+    request_id: &'a RequestId,
+    channel_id: &'a str,
+    message_id: &'a str,
+}
+
 async fn supervise_job(
     mut job: TaskFuture,
     mut progress_receiver: watch::Receiver<String>,
     cancellation: CancellationToken,
     shared: &TaskShared,
-    task_id: u64,
-    request_id: &RequestId,
-    channel_id: &str,
-    message_id: &str,
+    target: Option<ProgressTarget<'_>>,
 ) -> Result<TaskArtifact, TaskFailure> {
     let execution_deadline = Instant::now() + EXECUTION_TIMEOUT;
     let execution_timeout = sleep_until(execution_deadline);
@@ -465,6 +600,7 @@ async fn supervise_job(
                 return cancel_and_wait(
                     &mut job,
                     &cancellation,
+                    &shared.active,
                     TaskFailure::new("❌ 処理を中断しました", "runtime shutdown"),
                 ).await;
             }
@@ -472,6 +608,7 @@ async fn supervise_job(
                 return cancel_and_wait(
                     &mut job,
                     &cancellation,
+                    &shared.active,
                     TaskFailure::new("❌ 処理時間が上限を超えました", "execution timeout"),
                 ).await;
             }
@@ -479,8 +616,13 @@ async fn supervise_job(
                 return cancel_and_wait(
                     &mut job,
                     &cancellation,
+                    &shared.active,
                     TaskFailure::new("❌ 処理の進行が停止したため中断しました", "stall timeout"),
                 ).await;
+            }
+            _ = cancellation.cancelled() => {
+                return cancel_and_wait(&mut job, &cancellation, &shared.active,
+                    TaskFailure::new("❌ 処理を中断しました", "request cancelled")).await;
             }
             changed = progress_receiver.changed(), if !progress_closed => {
                 match changed {
@@ -490,14 +632,15 @@ async fn supervise_job(
             }
             _ = progress_tick.tick() => {
                 let content = progress_receiver.borrow().clone();
-                if !content.is_empty() && content != last_sent {
+                if let Some(target) = &target
+                    && !content.is_empty() && content != last_sent {
                     let action = core_action(
                         shared,
-                        task_id,
-                        request_id,
+                        target.task_id,
+                        target.request_id,
                         CoreActionData::EditMessage {
-                            channel_id: channel_id.to_owned(),
-                            message_id: message_id.to_owned(),
+                            channel_id: target.channel_id.to_owned(),
+                            message_id: target.message_id.to_owned(),
                             content: content.clone(),
                         },
                     );
@@ -514,10 +657,18 @@ async fn supervise_job(
 async fn cancel_and_wait(
     job: &mut TaskFuture,
     cancellation: &CancellationToken,
+    active: &Semaphore,
     failure: TaskFailure,
 ) -> Result<TaskArtifact, TaskFailure> {
     cancellation.cancel();
-    let _ = timeout(CANCELLATION_GRACE, &mut *job).await;
+    if timeout(CANCELLATION_GRACE, &mut *job).await.is_err() {
+        // 終了しない実処理を新しい描画で置き換えない。
+        active.close();
+        return Err(TaskFailure::new(
+            "❌ 生成処理を安全に停止できませんでした",
+            "task cancellation stalled",
+        ));
+    }
     Err(failure)
 }
 
@@ -645,7 +796,7 @@ fn task_workspace(task_id: u64) -> PathBuf {
         .join(format!("task-{}-{task_id}", std::process::id()))
 }
 
-async fn cleanup_task_workspace(task_id: u64) {
+pub(crate) async fn cleanup_task_workspace(task_id: u64) {
     if let Err(error) = tokio::fs::remove_dir_all(task_workspace(task_id)).await
         && error.kind() != std::io::ErrorKind::NotFound
     {
@@ -776,6 +927,7 @@ mod tests {
         let result = cancel_and_wait(
             &mut job,
             &cancellation,
+            &Semaphore::new(1),
             TaskFailure::new("cancelled", "test timeout"),
         )
         .await;
@@ -806,16 +958,7 @@ mod tests {
 
         let result = timeout(
             Duration::from_secs(1),
-            supervise_job(
-                job,
-                progress_receiver,
-                cancellation,
-                &shared,
-                1,
-                &RequestId::new("request:closed-progress"),
-                "channel:test",
-                "message:test",
-            ),
+            supervise_job(job, progress_receiver, cancellation, &shared, None),
         )
         .await
         .expect("progress channel切断後にjobが完了しませんでした");

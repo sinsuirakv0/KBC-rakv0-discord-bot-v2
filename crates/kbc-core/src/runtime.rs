@@ -95,6 +95,7 @@ pub struct AppRuntime {
     notifications: Arc<NotificationService>,
     bot_status: Arc<BotStatusService>,
     tasks: Arc<TaskRuntime>,
+    remote_motion: crate::motion::remote::RemoteMotionService,
     worker: Mutex<Option<JoinHandle<()>>>,
     is_shutdown: AtomicBool,
 }
@@ -157,12 +158,12 @@ impl AppRuntime {
             Arc::clone(&tasks),
             Arc::clone(&role_settings),
             Arc::clone(&bot_status),
-            config.ffmpeg_path,
+            config.ffmpeg_path.clone(),
         )
         .map_err(|error| RuntimeError::CommandRegistration(error.to_string()))?;
         let notifications = Arc::new(NotificationService::new(
             Arc::clone(&storage),
-            http,
+            Arc::clone(&http),
             action_sender.clone(),
             shutdown_receiver.clone(),
         ));
@@ -184,7 +185,12 @@ impl AppRuntime {
             shutdown_sender,
             notifications,
             bot_status,
-            tasks,
+            tasks: Arc::clone(&tasks),
+            remote_motion: crate::motion::remote::RemoteMotionService::new(
+                Arc::clone(&tasks),
+                http,
+                config.ffmpeg_path,
+            ),
             worker: Mutex::new(Some(worker)),
             is_shutdown: AtomicBool::new(false),
         })
@@ -233,6 +239,28 @@ impl AppRuntime {
         self.notifications.submit(value).await
     }
 
+    pub async fn submit_motion(&self, value: serde_json::Value) -> Result<(), &'static str> {
+        if self.is_shutdown() {
+            return Err("unavailable");
+        }
+        self.remote_motion.submit(value).await
+    }
+
+    pub async fn motion_status(&self, id: &str) -> Option<serde_json::Value> {
+        self.remote_motion.status(id).await
+    }
+
+    pub async fn read_motion_artifact(
+        &self,
+        id: &str,
+    ) -> Result<crate::MotionArtifact, &'static str> {
+        self.remote_motion.read(id).await
+    }
+
+    pub async fn remove_motion(&self, id: &str) {
+        self.remote_motion.remove(id).await;
+    }
+
     pub async fn next_action(&self) -> Result<Option<CoreAction>, RuntimeError> {
         if self.is_shutdown.load(Ordering::Acquire) {
             return Ok(None);
@@ -267,6 +295,7 @@ impl AppRuntime {
             .map_err(|error| RuntimeError::NotificationWorkerJoin(error.to_string()))?;
         self.bot_status.shutdown().await;
         self.tasks.shutdown().await?;
+        self.remote_motion.shutdown().await;
 
         Ok(())
     }
