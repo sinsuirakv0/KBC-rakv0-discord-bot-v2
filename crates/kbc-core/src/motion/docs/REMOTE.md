@@ -1,6 +1,6 @@
 ﻿# LINE向けMotion代行API
 
-2026-10-07。実装済み、ローカルHTTPで結合検証済み。LINE側の生成失敗時にDiscord BotのRendererを使い、完成ファイルだけを返す。Discord・LINEへの投稿はこのAPIでは行わない。
+2026-10-07。実装済み、ローカルHTTPと本番HTTPSで生成確認済み。LINE側の生成失敗時にDiscord BotのRendererを使い、完成ファイルだけを返す。Discord・LINEへの投稿はこのAPIでは行わない。
 
 ## 起動と契約
 
@@ -32,4 +32,12 @@
 
 結果はプロセス内の有限Mapと一時ファイルであり、再起動では失われる。LINE側が同じIDで再受付した場合は再生成できる。素材参照mainの内容は生成時点に依存するため、固定commitを渡さない場合のbyte一致は保証しない。既存Event / ActionのProtocol v7とは独立した代行Protocol v1を使い、NativeとAdapterを同じ変更で配備する。
 
-検証手順はLINE側`experiments/motion-fallback/run.mjs`、結果は同repoの`experiments/motion-fallback/docs/VERIFICATION.md`。両Botをbuildした後、LINE repoから実行する。LINE / Discord認証を使わず、ローカルHTTPと公開ゲーム素材だけを使う。本番への公開・実LINE送信・低資源コンテナの負荷確認は別の運用検証になる。
+検証手順はLINE側`experiments/motion-fallback/run.mjs`、結果は同repoの`experiments/motion-fallback/docs/VERIFICATION.md`。両Botをbuildした後、LINE repoから実行する。LINE / Discord認証を使わず、ローカルHTTPと公開ゲーム素材だけを使う。実LINE送信・低資源コンテナでの継続負荷確認は別の運用検証になる。
+
+## 本番設定とHTTPS確認（2026-10-07）
+
+Northflankの`kbc-discord-bot`へe25e5be / uplifting-shade-921を配備。Linux buildは2分10秒で成功。既存公開ポート3000とHTTPS domainを使い、追加のドメイン・資源購入は行っていない。接続先は`https://p01--kbc-discord-bot--xwtq22smkhqt.code.run/motion-jobs`。生成した64文字の共通キーを`MOTION_RENDER_SECRET`へ保存し、LINEの`MOTION_REMOTE_SECRET`と揃えた。キーの値は資料・Gitへ残さない。
+
+0 instanceへ変更してから配備し、1 instanceへ戻した。CI / CDは元のONを維持。0.2vCPU / 512MBの実サービスで、認証なし401、認証付き受付・状態・完成成果の取得と生成依頼の削除を確認。PNGは136,677byte（1Frame指定）、MP4は4,421byte（3Frame指定・duration100ms）、GIFは9,125byte（3Frame指定）。形式ヘッダ・名前・先頭byte・出力上限を確認した。両プラットフォームへの投稿は0件。
+
+短い生成の成功はOOMの再現・長いmotionの性能・実LINE配送の確認とは区別する。通常のDiscord Commandと生成の実行枠・成果上限は共通のまま。
