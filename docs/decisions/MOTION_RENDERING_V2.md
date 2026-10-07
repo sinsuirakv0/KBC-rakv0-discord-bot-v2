@@ -59,7 +59,7 @@ ut / tut
 - Frame指定、範囲指定、複数Segmentの連結
 - `--full`
 - 30 fps
-- Frame数、再生時間、偶数の出力寸法
+- Frame数、再生時間、偶数の出力寸法（範囲省略時のMP4 KBは下記の最低表示時間を適用）
 - Asset不足、範囲外Frame、timeout、busyの明確な応答
 
 新しいRasterizerとEncoderを使うため、MP4 file hashと境界画素の完全一致は互換条件にしない。欠落したpart、位置ずれ、誤った透過・合成、Frame数・時間の不一致はRegressionとして扱う。
@@ -86,6 +86,14 @@ motion/
 CommandごとのN-API関数、Worker thread、Queue、HTTP client、timeout基盤は追加しない。
 
 ## Frame処理
+
+### KBの最低表示時間
+
+2026-10-06に、短いKBを確認しやすくするため、MP4で範囲を省略した各`k` Segmentの出力を最低30 Frame（30 fpsで1秒）とした。素材が30 Frame未満なら末尾Frameを必要な回数だけ保持する。30 Frame以上のKB、明示したFrame範囲、PNG、GIF、他のMotion種別は従来のFrame列を維持する。
+
+`layout::resolve_frames()`が`MotionPlan`と素材の最大Frameから共通のFrame列を確定し、`PreparedMotion::new()`が同じ列を表示範囲計測とMP4描画へ渡す。追加Frameも合計900 Frame上限に含め、上限を超える場合は列を追加する前に拒否する。素材の最大Frameを変更せず、末尾Frameの参照を再利用するため、範囲外Frameの評価や全Frame画像の保持は発生しない。
+
+味方710-fと敵000の実生成MP4を復号し、範囲省略時のKBが30 Frame・1秒、明示した0〜1が2 Frameとなることを確認した。`k w 0~~0 k`は61 Frame、GIFのKBは2 Frame、PNGは1 Frameを維持し、範囲省略のKBを31区間連結した930 Frame相当の要求は900 Frame上限で拒否した。
 
 ### 2 pass
 

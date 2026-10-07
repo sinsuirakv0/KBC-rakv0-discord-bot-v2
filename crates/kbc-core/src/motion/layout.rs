@@ -1,4 +1,4 @@
-//! 全Frameの可視範囲を集約し、有限な偶数Sizeの出力Layoutを決定する。
+﻿//! 全Frameの可視範囲を集約し、有限な偶数Sizeの出力Layoutを決定する。
 
 use std::collections::{HashMap, HashSet};
 
@@ -7,8 +7,9 @@ use super::evaluate::{DrawPacket, evaluate};
 use super::plan::MotionPlan;
 use super::project::MotionProject;
 use super::raster::SpriteSheet;
-use super::request::MotionKind;
+use super::request::{MotionFormat, MotionKind};
 
+const MIN_KNOCKBACK_MP4_FRAMES: usize = 30;
 const MAX_VIDEO_FRAMES: usize = 900;
 const MAX_DIMENSION: f32 = 960.0;
 const MAX_IMAGE_PIXELS: f32 = 640.0 * 480.0;
@@ -87,15 +88,32 @@ pub(super) fn resolve_frames(
                 range.end
             )));
         }
+        let frame_count = if plan.format == MotionFormat::Mp4
+            && segment.motion == MotionKind::Knockback
+            && segment.range.is_none()
+        {
+            range.len().max(MIN_KNOCKBACK_MP4_FRAMES)
+        } else {
+            range.len()
+        };
+        if frames.len() + frame_count > MAX_VIDEO_FRAMES {
+            return Err(MotionError::invalid("rendered frame count exceeds 900"));
+        }
+        let segment_end = frames.len() + frame_count;
         for frame in range.start..=range.end {
             frames.push(FrameRef {
                 motion: segment.motion,
                 frame,
             });
-            if frames.len() > MAX_VIDEO_FRAMES {
-                return Err(MotionError::invalid("rendered frame count exceeds 900"));
-            }
         }
+        // 短いKBは末尾Frameを保持し、次のモーションへ進む前に表示時間を確保する。
+        frames.resize(
+            segment_end,
+            FrameRef {
+                motion: segment.motion,
+                frame: range.end,
+            },
+        );
     }
     if frames.is_empty() {
         Err(MotionError::invalid("no frames were selected"))
