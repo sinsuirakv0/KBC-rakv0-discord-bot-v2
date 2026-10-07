@@ -43,3 +43,7 @@ DataSourceは共有`HttpService`だけを受け取る。CommandはDataSourceと`
 `sale <文字列>`は旧版と同じ検索結果一覧を返す。結果が9件以下の場合にReactionを付け、30秒待ち、選択結果の詳細を返す部分は未実装である。この処理は`reactionAdd`を跨ぐため、Phase 9のSession Managerへ移す。
 
 Cacheはない。1回のCommand内では`tokio::try_join!`で必要Fileを並行取得するが、Bot全体のHTTP同時実行数は共有Semaphoreで制限される。
+
+## 激レアの表示修正（2026-10-07）
+
+gatyaのformat_ratesへsuper_rare（激レア）を追加。モデルとJSONには存在していたため、取得・確率計算の変更は不要だった。レアと超激レアの間に表示し、0を省略する既存規則を維持する。レア6970・激レア2500・超激レア500・伝説レア30の回帰確認が通過した。LINE移植版にも同じ修正を適用した。

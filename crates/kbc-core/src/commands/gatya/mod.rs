@@ -595,6 +595,7 @@ fn format_rates(entry: &GachaEntry) -> String {
     [
         ("ノーマル", &entry.rates.normal),
         ("レア", &entry.rates.rare),
+        ("激レア", &entry.rates.super_rare),
         ("超激レア", &entry.rates.uber_rare),
         ("伝説レア", &entry.rates.legend_rare),
     ]
@@ -817,6 +818,20 @@ fn data_error<E: std::fmt::Display>(
 #[cfg(test)]
 mod tests {
     use super::{GachaMode, GachaTarget, GatyaRequest, parse_request};
+
+    #[test]
+    fn includes_super_rare_in_rates() {
+        let entry = serde_json::from_value(serde_json::json!({
+            "id": 1, "price": 150, "flags": 0, "guaranteed": false,
+            "rates": {"normal": 0, "rare": 6970, "superRare": 2500,
+                      "uberRare": 500, "legendRare": 30}
+        }))
+        .unwrap();
+        assert_eq!(
+            super::format_rates(&entry),
+            "レア 6970, 激レア 2500, 超激レア 500, 伝説レア 30"
+        );
+    }
 
     #[test]
     fn parses_supported_gatya_requests() {
