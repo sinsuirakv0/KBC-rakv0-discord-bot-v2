@@ -10,6 +10,7 @@ use kbc_protocol::CoreActionData;
 use crate::command::{Command, CommandContext, CommandFuture, CommandMetadata, CommandOutput};
 use crate::commands::common::file_picker::{NEXT_PAGE_EMOJI, NUMBER_EMOJIS, PREVIOUS_PAGE_EMOJI};
 use crate::commands::common::search::normalize_search_text;
+use crate::database_links::DatabaseSite;
 use crate::services::HttpService;
 use crate::session::{
     SessionContext, SessionContinuation, SessionFuture, SessionRequest, SessionResume,
@@ -17,7 +18,6 @@ use crate::session::{
 
 use data_source::{StageDataSource, StageEntry, StageSearchData};
 
-const SEARCH_PAGE_URL: &str = "https://jarjarblink.github.io/JDB/map_search.html?cc=ja";
 const DETAIL_PAGE_URL: &str = "https://jarjarblink.github.io/JDB/map.html";
 const REACTION_TIMEOUT: Duration = Duration::from_secs(60);
 const PAGE_SIZE: usize = 20;
@@ -50,9 +50,10 @@ impl StCommand {
         context: &CommandContext,
         arguments: &[String],
     ) -> Result<CommandOutput, crate::command::CommandExecutionError> {
+        let (arguments, site) = DatabaseSite::split_arguments(arguments);
         let request = parse_request(arguments);
         let (query, force) = match request {
-            StRequest::Landing => return Ok(message(context.channel_id(), SEARCH_PAGE_URL)),
+            StRequest::Landing => return Ok(message(context.channel_id(), site.search_url("st"))),
             StRequest::Help => return Ok(message(context.channel_id(), &self.help)),
             StRequest::Search { query, force } => (query, force),
         };
@@ -75,6 +76,7 @@ impl StCommand {
                     channel_id: context.channel_id().to_owned(),
                     content: format_detail(
                         &entry,
+                        site,
                         id_match
                             .as_ref()
                             .is_some_and(|matched| Arc::ptr_eq(matched, &entry) && entry.is_map()),
@@ -84,7 +86,7 @@ impl StCommand {
             return Ok(output);
         }
         if matches.len() <= NUMBER_EMOJIS.len() {
-            let continuation = StageSelection::new(query, matches);
+            let continuation = StageSelection::new(query, matches, site);
             let content = continuation.format("数字のリアクションで選択してください。");
             let session = SessionRequest::new(
                 context.user_id().to_owned(),
@@ -187,8 +189,8 @@ fn format_label(entry: &StageEntry) -> String {
     format!("{} {}", entry.display_id, entry.display_name)
 }
 
-fn format_url(entry: &StageEntry, raw_map_id: bool) -> String {
-    if raw_map_id && entry.is_map() {
+fn format_url(entry: &StageEntry, site: DatabaseSite, raw_map_id: bool) -> String {
+    if matches!(site, DatabaseSite::Jdb) && raw_map_id && entry.is_map() {
         return format!("{DETAIL_PAGE_URL}?cc=ja&id={}", entry.raw_map_id);
     }
     let mut url = format!(
@@ -198,11 +200,15 @@ fn format_url(entry: &StageEntry, raw_map_id: bool) -> String {
     if let Some(stage_index) = entry.stage_index() {
         url.push_str(&format!("&stage={stage_index}"));
     }
-    url
+    site.detail_url("st", &entry.display_id, url)
 }
 
-fn format_detail(entry: &StageEntry, raw_map_id: bool) -> String {
-    format!("{}\n{}", format_label(entry), format_url(entry, raw_map_id))
+fn format_detail(entry: &StageEntry, site: DatabaseSite, raw_map_id: bool) -> String {
+    format!(
+        "{}\n{}",
+        format_label(entry),
+        format_url(entry, site, raw_map_id)
+    )
 }
 
 fn format_header(query: &str, total: usize, page: Option<(usize, usize)>) -> String {
@@ -280,18 +286,20 @@ fn list_output(
 }
 
 struct StageSelection {
+    site: DatabaseSite,
     query: String,
     matches: Vec<Arc<StageEntry>>,
     reactions: Vec<String>,
 }
 
 impl StageSelection {
-    fn new(query: String, matches: Vec<Arc<StageEntry>>) -> Self {
+    fn new(query: String, matches: Vec<Arc<StageEntry>>, site: DatabaseSite) -> Self {
         let reactions = NUMBER_EMOJIS[..matches.len()]
             .iter()
             .map(|emoji| (*emoji).to_owned())
             .collect();
         Self {
+            site,
             query,
             matches,
             reactions,
@@ -322,7 +330,7 @@ impl SessionContinuation for StageSelection {
                 },
                 CoreActionData::SendMessage {
                     channel_id: context.channel_id().to_owned(),
-                    content: format_detail(entry, false),
+                    content: format_detail(entry, self.site, false),
                 },
             ]))
         })

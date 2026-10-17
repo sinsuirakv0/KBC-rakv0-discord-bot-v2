@@ -5,6 +5,7 @@ mod command;
 mod command_runtime;
 mod commands;
 mod content;
+mod database_links;
 mod motion;
 mod notification;
 mod notification_role_settings;

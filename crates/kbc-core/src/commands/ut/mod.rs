@@ -14,6 +14,7 @@ use crate::commands::common::file_picker::{
     AssetFileOption, NEXT_PAGE_EMOJI, NUMBER_EMOJIS, PREVIOUS_PAGE_EMOJI, file_picker,
 };
 use crate::commands::common::search::normalize_search_text;
+use crate::database_links::DatabaseSite;
 use crate::motion::request::{MotionRequest, parse_motion_arguments};
 use crate::motion::{MotionJob, MotionPlan};
 use crate::services::HttpService;
@@ -26,7 +27,6 @@ use crate::task_runtime::{
 
 use data_source::UtDataSource;
 
-const SEARCH_PAGE_URL: &str = "https://jarjarblink.github.io/JDB/unit_search.html?cc=ja";
 const DETAIL_PAGE_BASE_URL: &str = "https://jarjarblink.github.io/JDB";
 const REACTION_TIMEOUT: Duration = Duration::from_secs(60);
 const PAGE_SIZE: usize = 20;
@@ -152,7 +152,7 @@ struct FileRequest {
 
 #[derive(Clone)]
 enum UtOperation {
-    Detail,
+    Detail(DatabaseSite),
     Origin(OriginRequest),
     File(FileRequest),
     Motion(MotionRequest),
@@ -216,8 +216,9 @@ impl UtCommand {
         {
             return Ok(message(channel_id, self.help.clone()));
         }
+        let (_, site) = DatabaseSite::split_arguments(arguments);
         let (query, force, operation) = match parse_request(arguments) {
-            UtRequest::Landing => return Ok(message(channel_id, SEARCH_PAGE_URL)),
+            UtRequest::Landing => return Ok(message(channel_id, site.search_url("ut"))),
             UtRequest::InvalidOrigin => return Ok(message(channel_id, INVALID_ORIGIN_MESSAGE)),
             UtRequest::InvalidFile => return Ok(message(channel_id, INVALID_FILE_MESSAGE)),
             UtRequest::InvalidMotion => return Ok(message(channel_id, INVALID_MOTION_MESSAGE)),
@@ -240,15 +241,15 @@ impl UtCommand {
             return Ok(message(channel_id, NOT_FOUND_MESSAGE));
         }
 
-        if matches.len() == 1 && !matches!(&operation, UtOperation::Detail) {
+        if matches.len() == 1 && !matches!(&operation, UtOperation::Detail(_)) {
             return self.run_selected(context, &matches[0], operation).await;
         }
-        if matches.len() <= 3 && matches!(&operation, UtOperation::Detail) {
+        if matches.len() <= 3 && matches!(&operation, UtOperation::Detail(_)) {
             let mut output = CommandOutput::new();
             for matched in matches {
                 output.push(CoreActionData::SendMessage {
                     channel_id: channel_id.to_owned(),
-                    content: format_detail(&matched),
+                    content: format_detail(&matched, site),
                 })?;
             }
             return Ok(output);
@@ -288,7 +289,9 @@ impl UtCommand {
         operation: UtOperation,
     ) -> Result<CommandOutput, crate::command::CommandExecutionError> {
         match operation {
-            UtOperation::Detail => Ok(message(context.channel_id(), format_detail(matched))),
+            UtOperation::Detail(site) => {
+                Ok(message(context.channel_id(), format_detail(matched, site)))
+            }
             UtOperation::Origin(request) => Ok(CommandOutput::single(
                 fetch_origin(context.channel_id(), matched, request, &self.data_source).await,
             )),
@@ -319,6 +322,7 @@ impl Command for UtCommand {
 }
 
 fn parse_request(arguments: &[String]) -> UtRequest {
+    let (arguments, site) = DatabaseSite::split_arguments(arguments);
     if arguments.is_empty() {
         return UtRequest::Landing;
     }
@@ -364,7 +368,7 @@ fn parse_request(arguments: &[String]) -> UtRequest {
         return UtRequest::Search {
             query,
             force,
-            operation: UtOperation::Detail,
+            operation: UtOperation::Detail(site),
         };
     };
     if query.is_empty() {
@@ -542,13 +546,16 @@ fn format_label(matched: &UtSearchMatch) -> String {
     )
 }
 
-fn format_detail(matched: &UtSearchMatch) -> String {
-    format!(
-        "{}\n{}/u000.html?cc=ja&unit={}",
-        format_label(matched),
-        DETAIL_PAGE_BASE_URL,
-        matched.unit.id
-    )
+fn format_detail(matched: &UtSearchMatch, site: DatabaseSite) -> String {
+    let url = site.detail_url(
+        "ut",
+        &matched.unit.id.to_string(),
+        format!(
+            "{DETAIL_PAGE_BASE_URL}/u000.html?cc=ja&unit={}",
+            matched.unit.id
+        ),
+    );
+    format!("{}\n{url}", format_label(matched))
 }
 
 fn format_selection(query: &str, matches: &[UtSearchMatch], footer: &str) -> String {
@@ -935,10 +942,10 @@ impl SessionContinuation for UtSelection {
                 content: self.format(&format!("選択済み: {}", format_label(matched))),
             }];
             match self.operation.clone() {
-                UtOperation::Detail => {
+                UtOperation::Detail(site) => {
                     actions.push(send_message_action(
                         context.channel_id(),
-                        format_detail(matched),
+                        format_detail(matched, site),
                     ));
                     Ok(SessionResume::complete(actions))
                 }

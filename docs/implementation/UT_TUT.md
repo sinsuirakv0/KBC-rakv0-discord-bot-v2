@@ -59,3 +59,6 @@ Core直接Smokeで次を確認した。
 - `o.tut 0 file`、`o.ut 0 file f`の実在候補
 - `ut file`のReaction選択、Message編集、添付
 - `o.ut ネコ`の1ページ目から2ページ目への再武装
+
+
+2026-10-17: ut/tut/stの標準リンクをKBCへ変更し、末尾jdbで従来リンクを選択する。関数・ID対応・選択時の保持はdocs/implementation/DATABASE_LINKS.md。

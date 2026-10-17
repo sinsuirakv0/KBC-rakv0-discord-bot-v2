@@ -14,6 +14,7 @@ use crate::commands::common::file_picker::{
     AssetFileOption, NEXT_PAGE_EMOJI, NUMBER_EMOJIS, PREVIOUS_PAGE_EMOJI, file_picker,
 };
 use crate::commands::common::search::normalize_search_text;
+use crate::database_links::DatabaseSite;
 use crate::motion::request::{MotionRequest, parse_motion_arguments};
 use crate::motion::{MotionJob, MotionPlan};
 use crate::services::HttpService;
@@ -26,7 +27,6 @@ use crate::task_runtime::{
 
 use data_source::TutDataSource;
 
-const SEARCH_PAGE_URL: &str = "https://jarjarblink.github.io/JDB/tunit_search.html?cc=ja";
 const DETAIL_PAGE_URL: &str = "https://jarjarblink.github.io/JDB/t000.html?cc=ja";
 const REACTION_TIMEOUT: Duration = Duration::from_secs(60);
 const PAGE_SIZE: usize = 20;
@@ -63,7 +63,7 @@ struct TutSearchMatch {
 
 #[derive(Clone)]
 enum TutOperation {
-    Detail,
+    Detail(DatabaseSite),
     Origin,
     File,
     Motion(MotionRequest),
@@ -121,8 +121,9 @@ impl TutCommand {
         {
             return Ok(message(channel_id, self.help.clone()));
         }
+        let (_, site) = DatabaseSite::split_arguments(arguments);
         let (query, force, operation) = match parse_request(arguments) {
-            TutRequest::Landing => return Ok(message(channel_id, SEARCH_PAGE_URL)),
+            TutRequest::Landing => return Ok(message(channel_id, site.search_url("tut"))),
             TutRequest::Help => return Ok(message(channel_id, self.help.clone())),
             TutRequest::InvalidFile => return Ok(message(channel_id, INVALID_FILE_MESSAGE)),
             TutRequest::InvalidMotion => return Ok(message(channel_id, INVALID_MOTION_MESSAGE)),
@@ -145,17 +146,17 @@ impl TutCommand {
             return Ok(message(channel_id, NOT_FOUND_MESSAGE));
         }
 
-        if matches.len() == 1 && !matches!(&operation, TutOperation::Detail) {
+        if matches.len() == 1 && !matches!(&operation, TutOperation::Detail(_)) {
             return self
                 .run_selected(context, matches.into_iter().next().unwrap(), operation)
                 .await;
         }
-        if matches.len() <= 3 && matches!(&operation, TutOperation::Detail) {
+        if matches.len() <= 3 && matches!(&operation, TutOperation::Detail(_)) {
             let mut output = CommandOutput::new();
             for matched in matches {
                 output.push(CoreActionData::SendMessage {
                     channel_id: channel_id.to_owned(),
-                    content: format_detail(&matched),
+                    content: format_detail(&matched, site),
                 })?;
             }
             return Ok(output);
@@ -195,7 +196,9 @@ impl TutCommand {
         operation: TutOperation,
     ) -> Result<CommandOutput, crate::command::CommandExecutionError> {
         match operation {
-            TutOperation::Detail => Ok(message(context.channel_id(), format_detail(&matched))),
+            TutOperation::Detail(site) => {
+                Ok(message(context.channel_id(), format_detail(&matched, site)))
+            }
             TutOperation::Origin => {
                 let action = fetch_origin(context.channel_id(), &matched, &self.data_source).await;
                 Ok(CommandOutput::single(action))
@@ -225,6 +228,7 @@ impl Command for TutCommand {
 }
 
 fn parse_request(arguments: &[String]) -> TutRequest {
+    let (arguments, site) = DatabaseSite::split_arguments(arguments);
     if arguments.is_empty() {
         return TutRequest::Landing;
     }
@@ -286,7 +290,7 @@ fn parse_request(arguments: &[String]) -> TutRequest {
         operation: if origin {
             TutOperation::Origin
         } else {
-            TutOperation::Detail
+            TutOperation::Detail(site)
         },
     }
 }
@@ -364,13 +368,13 @@ fn format_label(matched: &TutSearchMatch) -> String {
     format!("{} {}", matched.enemy.id, display_name(matched))
 }
 
-fn format_detail(matched: &TutSearchMatch) -> String {
-    format!(
-        "{}\n{}&unit={}",
-        format_label(matched),
-        DETAIL_PAGE_URL,
-        matched.enemy.id
-    )
+fn format_detail(matched: &TutSearchMatch, site: DatabaseSite) -> String {
+    let url = site.detail_url(
+        "tut",
+        &matched.enemy.id.to_string(),
+        format!("{DETAIL_PAGE_URL}&unit={}", matched.enemy.id),
+    );
+    format!("{}\n{url}", format_label(matched))
 }
 
 fn format_selection(query: &str, matches: &[TutSearchMatch], footer: &str) -> String {
@@ -601,10 +605,10 @@ impl SessionContinuation for TutSelection {
                 content: self.format(&format!("選択済み: {}", format_label(matched))),
             }];
             match self.operation.clone() {
-                TutOperation::Detail => {
+                TutOperation::Detail(site) => {
                     actions.push(CoreActionData::SendMessage {
                         channel_id: context.channel_id().to_owned(),
-                        content: format_detail(matched),
+                        content: format_detail(matched, site),
                     });
                     Ok(SessionResume::complete(actions))
                 }

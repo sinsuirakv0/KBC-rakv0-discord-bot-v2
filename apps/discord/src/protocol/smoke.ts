@@ -42,6 +42,12 @@ async function main(): Promise<void> {
     ["static-response", "o.HOME ignored", loadContent("responses", "home")],
     ["static-help", "o.PING HELP", loadContent("help", "ping")],
     ["help-index", "o.help ignored", loadContent("help", "index")],
+    ["unit-kbc", "o.ut", "https://kbc-rakv0.pages.dev/pages/unit-search/"],
+    ["enemy-kbc", "o.tut", "https://kbc-rakv0.pages.dev/pages/tunit-search/"],
+    ["stage-kbc", "o.st", "https://kbc-rakv0.pages.dev/pages/stage-search/"],
+    ["unit-jdb", "o.ut jdb", "https://jarjarblink.github.io/JDB/unit_search.html?cc=ja"],
+    ["enemy-jdb", "o.tut jdb", "https://jarjarblink.github.io/JDB/tunit_search.html?cc=ja"],
+    ["stage-jdb", "o.st jdb", "https://jarjarblink.github.io/JDB/map_search.html?cc=ja"],
   ] as const;
   for (const [id, input, expectedContent] of cases) {
     await core.submitEvent(createMessageEvent(id, input));
