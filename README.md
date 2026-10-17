@@ -187,3 +187,6 @@ scripts/             Build・Local開発補助Script
 <p align="center">
   Built with Rust, TypeScript, discord.js and FFmpeg.
 </p>
+
+
+クラブ用リンクは [niseclub](docs/implementation/NISECLUB.md)。Webと両botで共通の `URLKEY_SECRET` を設定して再起動する。

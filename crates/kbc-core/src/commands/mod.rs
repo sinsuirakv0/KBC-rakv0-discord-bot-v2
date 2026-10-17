@@ -7,6 +7,7 @@ mod gatya;
 mod help;
 mod item;
 mod maint;
+mod niseclub;
 mod push;
 mod sale;
 pub(crate) mod settings;
@@ -61,6 +62,13 @@ pub(crate) fn built_in_commands(
         .help("index")
         .ok_or(MissingCommandContent::HelpIndex)?;
     commands.push(Box::new(HelpCommand::new(help_index)));
+    let club_help = content
+        .help("niseclub")
+        .ok_or(MissingCommandContent::CommandHelp("niseclub"))?;
+    commands.push(Box::new(niseclub::NiseClubCommand::new(
+        club_help,
+        Arc::clone(&clock),
+    )));
     let push_help = content
         .help("push")
         .ok_or(MissingCommandContent::CommandHelp("push"))?;

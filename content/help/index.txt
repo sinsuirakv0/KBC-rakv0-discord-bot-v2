@@ -7,6 +7,7 @@ o.tut    敵キャラ検索
 o.st     ステージ検索
 o.skd    スケジュール表示
 o.skdsite スケジュールサイト一覧
+o.niseclub クラブサイトの期限付きリンク
 o.asset  アセット関係のURL
 o.sale   saleスケジュールと詳細
 o.gatya  gatyaスケジュールと詳細
