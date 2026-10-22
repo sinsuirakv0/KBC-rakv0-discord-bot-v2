@@ -17,6 +17,8 @@ messageCreate
 
 ## 共通部品
 
+2026-10-22。saleのAll_day_event.tsv / Mission_Name.csv、gatyaとskdのGatyaData_Option_Set*.tsvも、assetsのcurrentと採用元索引で新配置へ解決する。各CommandのHTTP Clientや取得ループは追加せず、共有HttpServiceで対応する。[関数・hash検証・上限](../../crates/kbc-core/docs/ASSET_PLATFORM.md)。
+
 - `services/http.rs`: Client再利用、同時実行permit、timeout、status、Response size、UTF-8を検証する。
 - `services/clock.rs`: 現在時刻をCommandへ注入し、DiscordやHTTPから時刻取得を分離する。
 - `commands/common/schedule.rs`: event header日時の検証、JST表示、曜日、期間、time blockを共有する。

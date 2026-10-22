@@ -29,7 +29,7 @@ commands/common
 
 Commandは`HttpService`を直接構築しない。Text metadataは10分TTLで、ETagとLast-Modifiedを使って再検証する。更新またはParseに失敗した場合、過去に検証成功したsnapshotだけを利用する。同時refreshはresource単位のMutexで1本にまとめる。
 
-Asset存在確認は共有HTTPのHEADを使い、1 batch最大6件、Cache最大512件とする。最古の確認結果から退避し、添付file本体はCacheしない。
+Asset存在確認は検証済み採用元索引を使い、移行前の固定commitやfixtureでは共有HTTPのHEADを使う。1 batch最大6件、Cache最大512件とし、最古の確認結果から退避する。添付file本体はCacheしない。
 
 ## Session
 
@@ -45,6 +45,8 @@ Asset存在確認は共有HTTPのHEADを使い、1 batch最大6件、Cache最大
 検索候補からfile操作へ進む場合、候補Messageを「選択済み」へ編集した後、新しいfile prompt Messageを送る。その`sendMessage`結果を次のSessionへ結び付ける。
 
 ## Data
+
+2026-10-22。assetsの旧sitedata実体廃止に対応。既存DataSourceのlogical URLは共有HttpServiceでcurrent→manifest→採用元pathへ解決し、同一commitの名前・UnitBuy・画像を取得する。キャラJSONはsite/characters.jsonとなり、hash確認後にBOMを除去して既存parserへ渡す。存在確認は新索引の選択結果を使用し、添付は実byteのサイズ/SHA-256を検証する。motionの複数素材はpinnedでcommitを固定する。既存metadata cache/Session/HTTP枠は変更しない。[共通resolverの関数・上限・検証](../../crates/kbc-core/docs/ASSET_PLATFORM.md)。
 
 `tut`は`Enemyname.tsv`と`enemyname.json`を検証後に結合する。表示名が`ダミー`の場合は一致別称を表示へ利用する。
 

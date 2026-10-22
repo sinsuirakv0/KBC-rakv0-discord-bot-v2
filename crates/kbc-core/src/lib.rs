@@ -1,6 +1,7 @@
 ﻿//! Discord非依存のBot RuntimeとDomain Logicを置くcrate。
 
 mod action_bus;
+mod asset_platform;
 mod command;
 mod command_runtime;
 mod commands;

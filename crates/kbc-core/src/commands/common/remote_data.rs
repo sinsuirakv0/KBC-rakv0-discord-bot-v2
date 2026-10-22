@@ -139,6 +139,15 @@ struct AssetExistence {
 }
 
 impl RemoteAssetSource {
+    pub(crate) async fn pinned(&self) -> Result<Self, RemoteDataError> {
+        let mut source = self.clone();
+        source.base_url = self
+            .http
+            .pin_asset_base(&self.base_url)
+            .await
+            .map_err(|e| RemoteDataError::new("dataset", e.to_string()))?;
+        Ok(source)
+    }
     pub(crate) fn new(base_url: impl Into<String>, ttl: Duration, http: Arc<HttpService>) -> Self {
         Self {
             base_url: base_url.into(),
