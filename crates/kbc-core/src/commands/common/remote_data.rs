@@ -289,9 +289,9 @@ fn is_safe_asset_path(value: &str) -> bool {
             !segment.is_empty()
                 && segment != "."
                 && segment != ".."
-                && segment
-                    .chars()
-                    .all(|character| character.is_ascii_alphanumeric() || "._-".contains(character))
+                && segment.chars().all(|character| {
+                    character.is_ascii_alphanumeric() || "._-@".contains(character)
+                })
         })
         && ["png", "imgcut", "mamodel", "maanim"]
             .iter()

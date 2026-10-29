@@ -46,6 +46,8 @@ Asset存在確認は検証済み採用元索引を使い、移行前の固定com
 
 ## Data
 
+2026-10-29。storageVersion=2の数字版フォルダとIntegrated-dataへ対応した。共通HttpServiceが名前CSV・画像・描画素材の取得先を統合URLへ解決し、manifestの索引にあるsize/hashで照合する。キャラJSONは生成物から取得。音源を含む索引と@入りpathの検証も共通resolverで行う。取得の関係・旧版互換は[Assets保存契約](../../crates/kbc-core/docs/ASSET_PLATFORM.md)を参照する。
+
 2026-10-22。assetsの旧sitedata実体廃止に対応。既存DataSourceのlogical URLは共有HttpServiceでcurrent→manifest→採用元pathへ解決し、同一commitの名前・UnitBuy・画像を取得する。キャラJSONはsite/characters.jsonとなり、hash確認後にBOMを除去して既存parserへ渡す。存在確認は新索引の選択結果を使用し、添付は実byteのサイズ/SHA-256を検証する。motionの複数素材はpinnedでcommitを固定する。既存metadata cache/Session/HTTP枠は変更しない。[共通resolverの関数・上限・検証](../../crates/kbc-core/docs/ASSET_PLATFORM.md)。
 
 `tut`は`Enemyname.tsv`と`enemyname.json`を検証後に結合する。表示名が`ダミー`の場合は一致別称を表示へ利用する。

@@ -17,6 +17,8 @@ messageCreate
 
 ## 共通部品
 
+2026-10-29。storageVersion=2は共通resolverが数字版の生成物とjp/Integrated-dataへ解決する。sale/gatya/skdの既存logical URLを維持し、本文を統合先から取得してhash照合する。[現行の保存契約と互換処理](../../crates/kbc-core/docs/ASSET_PLATFORM.md)。
+
 2026-10-22。saleのAll_day_event.tsv / Mission_Name.csv、gatyaとskdのGatyaData_Option_Set*.tsvも、assetsのcurrentと採用元索引で新配置へ解決する。各CommandのHTTP Clientや取得ループは追加せず、共有HttpServiceで対応する。[関数・hash検証・上限](../../crates/kbc-core/docs/ASSET_PLATFORM.md)。
 
 - `services/http.rs`: Client再利用、同時実行permit、timeout、status、Response size、UTF-8を検証する。

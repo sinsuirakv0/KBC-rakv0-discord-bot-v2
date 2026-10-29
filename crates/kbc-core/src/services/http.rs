@@ -423,6 +423,9 @@ mod platform_live {
             "res/All_day_event.tsv",
             "res/Mission_Name.csv",
             "Data/GatyaData_Option_SetR.tsv",
+            "ImageData/000_f.imgcut",
+            "ImageData/000_f.mamodel",
+            "ImageData/000_f00.maanim",
         ] {
             assert!(
                 !http
@@ -437,6 +440,12 @@ mod platform_live {
             .await
             .unwrap();
         assert!(image.starts_with(b"\x89PNG\r\n\x1a\n"));
+        assert!(
+            http.get_bytes(&format!("{base}/assets/close@2x.png"))
+                .await
+                .unwrap()
+                .starts_with(b"\x89PNG\r\n\x1a\n")
+        );
         assert!(
             !http
                 .head_exists(&format!("{base}/Number/not-selected.png"))
