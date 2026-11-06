@@ -1,9 +1,9 @@
 ﻿**ホーム**
-<https://kbc-rakv0.vercel.app/index.html>
-**隠しホーム**
-<https://kbc-rakv0.vercel.app/secret/index.html>
-**その他**
-motion
-ut-<https://kbc-rakv0.vercel.app/unit/motion>
-tut-<https://kbc-rakv0.vercel.app/tunit/motion>
-にゃんこクラブ偽造<https://kbc-rakv0-save.vercel.app/nyanko-club-forgery>
+<https://kbc-rakv0.pages.dev/>
+
+ショトカ
+[ユニット検索](<https://kbc-rakv0.pages.dev/pages/unit-search/>)
+[敵ユニット検索](<https://kbc-rakv0.pages.dev/pages/tunit-search/>)
+[アニメーション](<https://kbc-rakv0.pages.dev/pages/motions/>)
+[公式info](<https://kbc-rakv0.pages.dev/pages/info-viewer/>)
+[assets一覧](<https://kbc-rakv0.pages.dev/pages/asset-explorer/>)
