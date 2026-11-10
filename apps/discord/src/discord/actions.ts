@@ -303,18 +303,25 @@ export async function executeCoreAction(
     }
     case "updatePanelReaction": {
       const panel = await getPanelSnapshot(client, action);
-      const reaction = panel.reactions?.find((item) => item.emoji.name === action.emoji && !item.emoji.id);
-      const route = Routes.channelMessageReaction(action.channelId, action.messageId, encodeURIComponent(action.emoji));
+      const reactions = panelReactions(panel, action.emoji);
       if (action.enabled) {
         // 未使用の番号に残っている選択を新しいロールへ引き継がない。
-        if (reaction && reaction.count > Number(reaction.me) + Number(reaction.me_burst ?? false)) {
+        if (reactions.some(({ reaction }) =>
+          reaction.count > Number(reaction.me) + Number(reaction.me_burst ?? false),
+        )) {
           throw new DiscordActionError("panel_reaction_slot_in_use", false);
         }
-        await client.rest.put(Routes.channelMessageOwnReaction(
-          action.channelId, action.messageId, encodeURIComponent(action.emoji),
-        ));
-      } else if (reaction) {
-        await client.rest.delete(route);
+        if (!reactions.some(({ reaction }) => reaction.me)) {
+          await client.rest.put(Routes.channelMessageOwnReaction(
+            action.channelId, action.messageId, encodeURIComponent(action.emoji),
+          ));
+        }
+      } else {
+        for (const { name } of reactions) {
+          await client.rest.delete(Routes.channelMessageReaction(
+            action.channelId, action.messageId, encodeURIComponent(name),
+          ));
+        }
       }
       return success(null);
     }
@@ -333,15 +340,39 @@ async function getPanelSnapshot(
   client: Client,
   action: Pick<ReactionRoleSync, "guildId" | "channelId" | "messageId">,
 ): Promise<APIMessage> {
-  const channel = await getSendableChannel(client, action.channelId);
-  if (!("guildId" in channel) || channel.guildId !== action.guildId) {
-    throw new DiscordActionError("invalid_role_panel", false);
+  try {
+    const channel = await getSendableChannel(client, action.channelId);
+    if (!("guildId" in channel) || channel.guildId !== action.guildId) {
+      throw new DiscordActionError("invalid_role_panel", false);
+    }
+    const message = await client.rest.get(Routes.channelMessage(channel.id, action.messageId)) as APIMessage;
+    if (message.author.id !== client.user?.id) {
+      throw new DiscordActionError("invalid_role_panel", false);
+    }
+    return message;
+  } catch (error) {
+    if (error instanceof DiscordAPIError) {
+      if (error.code === RESTJSONErrorCodes.UnknownMessage) {
+        throw new DiscordActionError("role_panel_message_missing", false);
+      }
+      if (error.code === RESTJSONErrorCodes.UnknownChannel) {
+        throw new DiscordActionError("role_panel_channel_missing", false);
+      }
+      if (error.code === RESTJSONErrorCodes.MissingAccess || error.code === RESTJSONErrorCodes.MissingPermissions) {
+        throw new DiscordActionError("role_panel_access_denied", false);
+      }
+    }
+    throw error;
   }
-  const message = await client.rest.get(Routes.channelMessage(channel.id, action.messageId)) as APIMessage;
-  if (message.author.id !== client.user?.id) {
-    throw new DiscordActionError("invalid_role_panel", false);
-  }
-  return message;
+}
+
+function panelReactions(panel: APIMessage, emoji: string) {
+  // 表示指定の有無を揃えて比較し、APIにはDiscordが返した絵文字名を使う。
+  const key = emoji.replaceAll("\uFE0F", "");
+  return (panel.reactions ?? []).flatMap((reaction) => {
+    const { id, name } = reaction.emoji;
+    return !id && name?.replaceAll("\uFE0F", "") === key ? [{ reaction, name }] : [];
+  });
 }
 
 async function syncReactionRoles(client: Client, action: ReactionRoleSync): Promise<void> {
@@ -405,35 +436,39 @@ async function fetchPanelReactors(
   emoji: string,
 ): Promise<Set<string>> {
   const selected = new Set<string>();
-  const reaction = panel.reactions?.find((item) => item.emoji.name === emoji && !item.emoji.id);
-  if (!reaction) return selected;
-
-  const route = Routes.channelMessageReaction(action.channelId, action.messageId, encodeURIComponent(emoji));
-  const types = [ReactionType.Normal];
-  if (reaction.count_details?.burst) types.push(ReactionType.Burst);
-  for (const type of types) {
-    const limit = action.userId ? 1 : 100;
-    let after = action.userId ? (BigInt(action.userId) - 1n).toString() : undefined;
-    // 全ページを読めなければ、そのロールは一括変更しない。
-    for (let offset = 0; ; offset += limit) {
-      const query = new URLSearchParams({ limit: String(limit), type: String(type) });
-      if (after) query.set("after", after);
-      const page = await client.rest.get(route, { query }) as RESTGetAPIChannelMessageReactionUsersResult;
-      if (action.userId) {
-        if (page.some((user) => user.id === action.userId && !user.bot)) selected.add(action.userId);
-        break;
-      }
-      if (offset + page.length > MAX_MEMBER_RESOLUTION_GUILD_SIZE) {
-        throw new DiscordActionError("too_many_panel_reactors", false);
-      }
-      for (const user of page) {
-        if (!user.bot) selected.add(user.id);
-      }
-      if (page.length < limit) break;
-      after = page[page.length - 1]?.id;
+  for (const { reaction, name } of panelReactions(panel, emoji)) {
+    const route = Routes.channelMessageReaction(action.channelId, action.messageId, encodeURIComponent(name));
+    await collectReactionUsers(client, route, ReactionType.Normal, action.userId, selected);
+    if (reaction.count_details?.burst) {
+      await collectReactionUsers(client, route, ReactionType.Burst, action.userId, selected);
     }
   }
   return selected;
+}
+
+async function collectReactionUsers(
+  client: Client,
+  route: ReturnType<typeof Routes.channelMessageReaction>,
+  type: ReactionType,
+  userId: string | null,
+  selected: Set<string>,
+): Promise<void> {
+  const limit = userId ? 1 : 100;
+  let after = userId ? (BigInt(userId) - 1n).toString() : undefined;
+  // 全ページを読めなければ、そのロールは一括変更しない。
+  for (let offset = 0; ; offset += limit) {
+    const query = new URLSearchParams({ limit: String(limit), type: String(type) });
+    if (after) query.set("after", after);
+    const page = await client.rest.get(route, { query }) as RESTGetAPIChannelMessageReactionUsersResult;
+    if (offset + page.length > MAX_MEMBER_RESOLUTION_GUILD_SIZE) {
+      throw new DiscordActionError("too_many_panel_reactors", false);
+    }
+    for (const user of page) {
+      if (!user.bot && (!userId || user.id === userId)) selected.add(user.id);
+    }
+    if (userId || page.length < limit) return;
+    after = page[page.length - 1]?.id;
+  }
 }
 
 type RichMessage = Extract<CoreActionData, {

@@ -36,7 +36,7 @@ private GitHub Data Repositoryの`config/maintainers.json`を正本とする。
 
 通知用Roleと選択パネルはメンテナー識別用Roleとは別で、Guildごとに保存する。`o.maint role <名前>`は権限ゼロのRoleだけを作成し、自動では選択肢へ追加しない。`o.maint pushsetting <Role ID> add|del`で最大9件の選択肢を管理し、引数なしの`o.maint pushsetting`で現在Channelへ単一の選択パネルを設置する。
 
-有効なパネルの番号Reactionと、登録済み通知Roleの所持状態を同期する。対応するReactionがあるMemberに付与し、ReactionがなくなったMemberからは該当する通知Roleだけを外す。Bot起動時とパネル更新時には既存の所持状態も照合する。対象Roleは権限ゼロ・Bot管理可能か毎回再検査する。
+有効なパネルの番号Reactionと、登録済み通知Roleの所持状態を同期する。対応するReactionがあるMemberに付与し、ReactionがなくなったMemberからは該当する通知Roleだけを外す。Bot起動時、パネル更新時、稼働中の約5分ごとに既存の所持状態も照合する。対象Roleは権限ゼロ・Bot管理可能か毎回再検査する。
 
 選択肢の追加は同じMessageを編集し、新しい番号だけを追加する。既存の番号とReactionは保持する。パネルを再設置した場合は旧パネルを無効化し、新しいパネルの選択に従って同期する。
 

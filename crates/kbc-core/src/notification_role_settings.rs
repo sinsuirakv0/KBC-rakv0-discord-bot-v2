@@ -317,7 +317,17 @@ impl NotificationRoleSettingsService {
         let Some(action) = sync_action(guild_id, panel, roles, None, None) else {
             return true;
         };
-        self.request_success(request_id, action).await
+        let error = match self.tasks.request_adapter(request_id, action).await {
+            Ok(ActionOutcome::Success { .. }) => return true,
+            Ok(ActionOutcome::Failure { code, .. }) => code,
+            Ok(_) => "unexpected-outcome".to_owned(),
+            Err(error) => error.to_owned(),
+        };
+        eprintln!(
+            "Notification role panel sync failed: guild_id={guild_id} channel_id={} message_id={} code={error}",
+            panel.channel_id, panel.message_id
+        );
+        false
     }
 
     async fn update_panel_reaction(

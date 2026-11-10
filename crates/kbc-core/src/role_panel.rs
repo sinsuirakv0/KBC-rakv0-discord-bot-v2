@@ -47,9 +47,10 @@ impl RolePanelService {
             } => (guild_id, channel_id, message_id, emoji.as_deref(), None),
             _ => return None,
         };
-        if emoji.is_some_and(|emoji| !NUMBER_EMOJIS.contains(&emoji)) {
-            return None;
-        }
+        let index = match emoji {
+            Some(emoji) => Some(reaction_index(emoji)?),
+            None => None,
+        };
         let settings = match self.storage.notification_role_settings(guild_id).await {
             Ok(settings) => settings,
             Err(error) => {
@@ -61,7 +62,7 @@ impl RolePanelService {
         if panel.channel_id != *channel_id || panel.message_id != *message_id {
             return None;
         }
-        sync_action(guild_id, &panel, &settings.roles, emoji, user_id)
+        sync_action(guild_id, &panel, &settings.roles, index, user_id)
     }
 }
 
@@ -69,22 +70,32 @@ pub(crate) fn number_emoji(index: usize) -> Option<&'static str> {
     NUMBER_EMOJIS.get(index).copied()
 }
 
+fn reaction_index(emoji: &str) -> Option<usize> {
+    NUMBER_EMOJIS.iter().position(|number| {
+        *number == emoji
+            || number
+                .chars()
+                .filter(|character| *character != '\u{fe0f}')
+                .eq(emoji.chars())
+    })
+}
+
 pub(crate) fn sync_action(
     guild_id: &str,
     panel: &NotificationRolePanel,
     roles: &[NotificationRole],
-    emoji_filter: Option<&str>,
+    index_filter: Option<usize>,
     user_id: Option<&str>,
 ) -> Option<CoreActionData> {
     let bindings: Vec<_> = roles
         .iter()
         .filter_map(|role| {
-            let emoji = number_emoji(role.reaction_index?)?;
-            if emoji_filter.is_some_and(|filter| filter != emoji) {
+            let index = role.reaction_index?;
+            if index_filter.is_some_and(|filter| filter != index) {
                 return None;
             }
             Some(ReactionRoleBinding {
-                emoji: emoji.to_owned(),
+                emoji: number_emoji(index)?.to_owned(),
                 role_id: role.role_id.clone(),
             })
         })
@@ -99,4 +110,16 @@ pub(crate) fn sync_action(
         bindings,
         user_id: user_id.map(str::to_owned),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::reaction_index;
+
+    #[test]
+    fn matches_number_reactions_with_or_without_emoji_presentation() {
+        assert_eq!(reaction_index("3\u{fe0f}\u{20e3}"), Some(2));
+        assert_eq!(reaction_index("3\u{20e3}"), Some(2));
+        assert_eq!(reaction_index("3"), None);
+    }
 }

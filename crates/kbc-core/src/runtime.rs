@@ -5,7 +5,9 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use kbc_protocol::{CoreAction, CoreEvent, CoreEventData, EventId, ProtocolVersionMismatch};
+use kbc_protocol::{
+    CoreAction, CoreEvent, CoreEventData, EventId, ProtocolVersionMismatch, RequestId,
+};
 use tokio::sync::{Mutex, mpsc, watch};
 use tokio::task::{JoinHandle, JoinSet};
 use tokio::time::Instant;
@@ -31,6 +33,7 @@ pub const DEFAULT_HTTP_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 pub const DEFAULT_HTTP_MAX_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
 const SETTINGS_INTERACTION_CONCURRENCY: usize = 4;
 const BOT_STATUS_INTERACTION_CONCURRENCY: usize = 4;
+const ROLE_PANEL_SYNC_INTERVAL: Duration = Duration::from_secs(5 * 60);
 const MAX_HTTP_CONCURRENCY: usize = 64;
 const MAX_HTTP_REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
 const MAX_HTTP_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
@@ -423,7 +426,8 @@ async fn run_worker(
     let mut session_manager = SessionManager::new(DEFAULT_MAX_SESSIONS);
     let mut settings_tasks = JoinSet::new();
     let mut bot_status_tasks = JoinSet::new();
-    let mut panels_initialized = false;
+    let mut panel_sync_task = JoinSet::new();
+    let mut next_panel_sync = None;
     loop {
         let next_expiration = session_manager.next_expiration();
         let event = tokio::select! {
@@ -445,7 +449,24 @@ async fn run_worker(
                 }
                 continue;
             },
-            _ = wait_for_session_expiration(next_expiration) => {
+            result = panel_sync_task.join_next(), if !panel_sync_task.is_empty() => {
+                if let Some(Err(error)) = result {
+                    eprintln!("Notification role panel sync task failed: {error}");
+                }
+                next_panel_sync = Some(Instant::now() + ROLE_PANEL_SYNC_INTERVAL);
+                continue;
+            },
+            _ = wait_for_deadline(next_panel_sync) => {
+                next_panel_sync = None;
+                let role_settings = Arc::clone(&role_settings);
+                panel_sync_task.spawn(async move {
+                    role_settings
+                        .sync_saved_panels(&RequestId::new("request:role-panel-sync"))
+                        .await;
+                });
+                continue;
+            },
+            _ = wait_for_deadline(next_expiration) => {
                 let expirations = session_manager.expire(Instant::now());
                 for expiration in expirations {
                     let actions = CommandActionBatch::from_data(
@@ -467,12 +488,8 @@ async fn run_worker(
             return;
         };
         if matches!(&event.event, CoreEventData::DiscordReady) {
-            if !panels_initialized {
-                panels_initialized = true;
-                let role_settings = Arc::clone(&role_settings);
-                settings_tasks.spawn(async move {
-                    role_settings.sync_saved_panels(&event.request_id).await;
-                });
+            if next_panel_sync.is_none() && panel_sync_task.is_empty() {
+                next_panel_sync = Some(Instant::now());
             }
             continue;
         }
@@ -638,7 +655,7 @@ async fn send_actions(
     true
 }
 
-async fn wait_for_session_expiration(deadline: Option<Instant>) {
+async fn wait_for_deadline(deadline: Option<Instant>) {
     match deadline {
         Some(deadline) => tokio::time::sleep_until(deadline).await,
         None => std::future::pending().await,
