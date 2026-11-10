@@ -168,12 +168,17 @@ impl AppRuntime {
             shutdown_receiver.clone(),
         ));
         let role_panel = RolePanelService::new(Arc::clone(&storage));
-        let settings = SettingsInteractionService::new(storage, Arc::clone(&tasks), role_settings);
+        let settings = SettingsInteractionService::new(
+            storage,
+            Arc::clone(&tasks),
+            Arc::clone(&role_settings),
+        );
         let worker = tokio::spawn(run_worker(
             command_runtime,
             settings,
             Arc::clone(&bot_status),
             role_panel,
+            role_settings,
             event_receiver,
             action_sender,
             shutdown_receiver,
@@ -410,6 +415,7 @@ async fn run_worker(
     settings: SettingsInteractionService,
     bot_status: Arc<BotStatusService>,
     role_panel: RolePanelService,
+    role_settings: Arc<NotificationRoleSettingsService>,
     mut event_receiver: mpsc::Receiver<CoreEvent>,
     action_sender: mpsc::Sender<CoreAction>,
     mut shutdown_receiver: watch::Receiver<bool>,
@@ -417,6 +423,7 @@ async fn run_worker(
     let mut session_manager = SessionManager::new(DEFAULT_MAX_SESSIONS);
     let mut settings_tasks = JoinSet::new();
     let mut bot_status_tasks = JoinSet::new();
+    let mut panels_initialized = false;
     loop {
         let next_expiration = session_manager.next_expiration();
         let event = tokio::select! {
@@ -459,6 +466,16 @@ async fn run_worker(
             drain_bot_status_tasks(&mut bot_status_tasks).await;
             return;
         };
+        if matches!(&event.event, CoreEventData::DiscordReady) {
+            if !panels_initialized {
+                panels_initialized = true;
+                let role_settings = Arc::clone(&role_settings);
+                settings_tasks.spawn(async move {
+                    role_settings.sync_saved_panels(&event.request_id).await;
+                });
+            }
+            continue;
+        }
         if BotStatusService::handles_event(&event) {
             if bot_status_tasks.len() >= BOT_STATUS_INTERACTION_CONCURRENCY {
                 bot_status.handle_event(&event).await;
@@ -514,7 +531,7 @@ async fn run_worker(
                 ));
             }
             actions
-        } else if let Some(action) = role_panel_action(&role_panel, &event).await {
+        } else if let Some(action) = role_panel.action_for_event(&event.event).await {
             Some(CommandActionBatch::from_data(
                 event.event_id.clone(),
                 event.request_id.clone(),
@@ -549,51 +566,6 @@ async fn drain_bot_status_tasks(tasks: &mut JoinSet<()>) {
     }
 }
 
-async fn role_panel_action(
-    role_panel: &RolePanelService,
-    event: &CoreEvent,
-) -> Option<kbc_protocol::CoreActionData> {
-    match &event.event {
-        CoreEventData::ReactionAdd {
-            guild_id,
-            channel_id,
-            message_id,
-            user_id,
-            emoji,
-        } => {
-            role_panel
-                .action_for_reaction(
-                    guild_id.as_deref(),
-                    channel_id,
-                    message_id,
-                    user_id,
-                    emoji,
-                    true,
-                )
-                .await
-        }
-        CoreEventData::ReactionRemove {
-            guild_id,
-            channel_id,
-            message_id,
-            user_id,
-            emoji,
-        } => {
-            role_panel
-                .action_for_reaction(
-                    guild_id.as_deref(),
-                    channel_id,
-                    message_id,
-                    user_id,
-                    emoji,
-                    false,
-                )
-                .await
-        }
-        _ => None,
-    }
-}
-
 async fn handle_session_event(
     session_manager: &mut SessionManager,
     event: CoreEvent,
@@ -617,8 +589,10 @@ async fn handle_session_event(
                 .handle_reaction(&channel_id, &message_id, &user_id, &emoji, now)
                 .await
         }
-        CoreEventData::ReactionRemove { .. } => None,
-        CoreEventData::MessageCreate { .. }
+        CoreEventData::DiscordReady
+        | CoreEventData::ReactionRemove { .. }
+        | CoreEventData::ReactionClear { .. }
+        | CoreEventData::MessageCreate { .. }
         | CoreEventData::ComponentInteraction { .. }
         | CoreEventData::ModalSubmit { .. } => None,
     }?;

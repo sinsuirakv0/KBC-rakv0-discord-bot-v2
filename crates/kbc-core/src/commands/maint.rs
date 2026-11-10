@@ -243,6 +243,9 @@ impl MaintCommand {
                     "notification-role-limit-reached" => {
                         format!("❌ 通知ロールは最大{MAX_NOTIFICATION_ROLES}件までです。")
                     }
+                    "panel_reaction_slot_in_use" => {
+                        "❌ 空き番号に古いリアクションが残っています。その番号だけを削除してから再実行してください。".to_owned()
+                    }
                     _ => {
                         eprintln!("Notification role update failed: {error}");
                         "❌ 通知ロール設定の保存に失敗しました。".to_owned()
@@ -259,13 +262,11 @@ impl MaintCommand {
         };
         message(
             context.channel_id(),
-            if result.panel_updated {
-                status.to_owned()
-            } else {
-                format!(
-                    "{status}\n⚠️ 選択メッセージの更新に失敗しました。`o.maint pushsetting` を再実行してください。"
-                )
-            },
+            crate::notification_role_settings::panel_update_message(
+                status,
+                result.panel_updated,
+                result.roles_synced,
+            ),
         )
     }
 
@@ -278,11 +279,7 @@ impl MaintCommand {
         {
             Ok(result) => message(
                 context.channel_id(),
-                if result.old_panel_disabled {
-                    "通知設定メッセージを設置しました。"
-                } else {
-                    "通知設定メッセージを設置しました。旧メッセージの無効化だけ失敗しました。"
-                },
+                result.message("通知設定メッセージを設置しました。"),
             ),
             Err(error) => {
                 eprintln!("Notification role panel publish failed: {error}");

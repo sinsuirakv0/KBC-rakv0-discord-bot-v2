@@ -216,7 +216,10 @@ impl SettingsInteractionService {
             "settings:panel-current" => context.show_modal(confirm_modal(
                 format!("settings:modal:panel:{}", context.channel_id),
                 "ロール選択パネルを設置",
-                format!("<#{}> にロール選択パネルを設置します。", context.channel_id),
+                format!(
+                    "<#{}> にパネルを設置します。再設置時は新しいパネルでの選択が必要です。",
+                    context.channel_id
+                ),
                 "設置する",
             )),
             "settings:panel-channel" => {
@@ -229,7 +232,7 @@ impl SettingsInteractionService {
                 context.show_modal(confirm_modal(
                     format!("settings:modal:panel:{channel_id}"),
                     "ロール選択パネルを設置",
-                    format!("<#{channel_id}> にロール選択パネルを設置します。"),
+                    format!("<#{channel_id}> にパネルを設置します。再設置時は新しいパネルでの選択が必要です。"),
                     "設置する",
                 ))
             }
@@ -811,12 +814,14 @@ impl SettingsInteractionService {
                     }
                     (false, false) => "このロールは登録されていません。",
                 };
-                let content = if result.panel_updated {
-                    status.to_owned()
-                } else {
-                    format!("{status}\n⚠️ 既存のロール選択パネルを更新できませんでした。")
-                };
-                context.edit_reply(content, role_back_rows())
+                context.edit_reply(
+                    crate::notification_role_settings::panel_update_message(
+                        status,
+                        result.panel_updated,
+                        result.roles_synced,
+                    ),
+                    role_back_rows(),
+                )
             }
             Err(error) => context.edit_reply(role_error_message(error.code()), role_back_rows()),
         }
@@ -866,20 +871,17 @@ impl SettingsInteractionService {
             .set_role(context.request_id, guild_id, &role.role_id, true)
             .await
         {
-            Ok(result) => {
-                let suffix = if result.panel_updated {
-                    ""
-                } else {
-                    "\n⚠️ 既存のロール選択パネルを更新できませんでした。"
-                };
-                context.edit_reply(
-                    format!(
-                        "通知ロール `@{}` (`{}`) を作成し、通知設定へ登録しました。{suffix}",
+            Ok(result) => context.edit_reply(
+                crate::notification_role_settings::panel_update_message(
+                    &format!(
+                        "通知ロール `@{}` (`{}`) を作成し、通知設定へ登録しました。",
                         role.name, role.role_id
                     ),
-                    role_back_rows(),
-                )
-            }
+                    result.panel_updated,
+                    result.roles_synced,
+                ),
+                role_back_rows(),
+            ),
             Err(error) => {
                 eprintln!("Created role registration failed: {error}");
                 context.edit_reply(
@@ -935,11 +937,7 @@ impl SettingsInteractionService {
             .await
         {
             Ok(result) => context.edit_reply(
-                if result.old_panel_disabled {
-                    "ロール選択パネルを設置しました。"
-                } else {
-                    "ロール選択パネルを設置しました。旧パネルの無効化だけ失敗しました。"
-                },
+                result.message("ロール選択パネルを設置しました。"),
                 role_back_rows(),
             ),
             Err(error) => {
@@ -1490,6 +1488,9 @@ fn role_error_message(code: &str) -> &'static str {
         "role_not_manageable" => "❌ Botが管理できないロールは通知ロールへ追加できません。",
         "role_unavailable" => "❌ 指定したロールが見つかりません。",
         "notification-role-limit-reached" => "❌ 通知ロールは最大9件です。",
+        "panel_reaction_slot_in_use" => {
+            "❌ 空き番号に古いリアクションが残っています。その番号だけを削除してから再実行してください。"
+        }
         _ => "❌ 通知ロール設定の保存に失敗しました。",
     }
 }

@@ -88,6 +88,8 @@ pub(crate) struct Subscription {
 pub(crate) struct NotificationRole {
     pub(crate) role_id: String,
     pub(crate) name: String,
+    #[serde(default)]
+    pub(crate) reaction_index: Option<usize>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -464,6 +466,9 @@ impl StorageService {
                 .position(|current| current.role_id == role.role_id);
             if enabled {
                 if let Some(position) = position {
+                    if settings.notification_roles[position].reaction_index != role.reaction_index {
+                        return Err(StorageError::new("notification-role-slot-in-use"));
+                    }
                     if settings.notification_roles[position] == *role {
                         return Ok(false);
                     }
@@ -471,6 +476,14 @@ impl StorageService {
                 } else {
                     if settings.notification_roles.len() >= MAX_NOTIFICATION_ROLES {
                         return Err(StorageError::new("notification-role-limit-reached"));
+                    }
+                    if role.reaction_index.is_none()
+                        || settings
+                            .notification_roles
+                            .iter()
+                            .any(|current| current.reaction_index == role.reaction_index)
+                    {
+                        return Err(StorageError::new("notification-role-slot-in-use"));
                     }
                     settings.notification_roles.push(role.clone());
                 }
@@ -549,35 +562,15 @@ impl StorageService {
         .await
     }
 
-    pub(crate) async fn notification_role_for_reaction(
-        &self,
-        guild_id: &str,
-        channel_id: &str,
-        message_id: &str,
-        index: usize,
-    ) -> Result<Option<String>, StorageError> {
-        if !valid_snowflake(guild_id)
-            || !valid_snowflake(channel_id)
-            || !valid_snowflake(message_id)
-        {
-            return Ok(None);
-        }
+    pub(crate) async fn notification_role_panel_guilds(&self) -> Result<Vec<String>, StorageError> {
         let mut state = self.state.lock().await;
         self.ensure_initialized(&mut state).await?;
-        let Some(settings) = state.settings.get(guild_id) else {
-            return Ok(None);
-        };
-        if settings
-            .notification_role_panel
-            .as_ref()
-            .is_none_or(|panel| panel.channel_id != channel_id || panel.message_id != message_id)
-        {
-            return Ok(None);
-        }
-        Ok(settings
-            .notification_roles
-            .get(index)
-            .map(|role| role.role_id.clone()))
+        Ok(state
+            .settings
+            .values()
+            .filter(|settings| settings.notification_role_panel.is_some())
+            .map(|settings| settings.guild_id.clone())
+            .collect())
     }
 
     pub(crate) async fn set_skd_related_url(
@@ -1186,8 +1179,12 @@ impl StorageService {
 }
 
 fn parse_settings(content: &str) -> Result<GuildSettings, StorageError> {
-    let settings: GuildSettings = serde_json::from_str(content.trim_start_matches('\u{feff}'))
+    let mut settings: GuildSettings = serde_json::from_str(content.trim_start_matches('\u{feff}'))
         .map_err(|error| StorageError::detail("invalid-guild-settings", error))?;
+    // 旧形式の並び順を既存パネルの番号として引き継ぐ。
+    for (index, role) in settings.notification_roles.iter_mut().enumerate() {
+        role.reaction_index.get_or_insert(index);
+    }
     validate_settings(&settings)?;
     Ok(settings)
 }
@@ -1344,6 +1341,15 @@ fn validate_settings(settings: &GuildSettings) -> Result<(), StorageError> {
         .collect::<HashSet<_>>();
     if configured_roles.len() != settings.notification_roles.len() {
         return Err(StorageError::new("duplicate-notification-role"));
+    }
+    let mut slots = [false; MAX_NOTIFICATION_ROLES];
+    for role in &settings.notification_roles {
+        let Some(slot) = role.reaction_index.and_then(|index| slots.get_mut(index)) else {
+            return Err(StorageError::new("invalid-notification-role-slot"));
+        };
+        if std::mem::replace(slot, true) {
+            return Err(StorageError::new("duplicate-notification-role-slot"));
+        }
     }
     if settings
         .skd_related_urls
@@ -1560,6 +1566,26 @@ mod tests {
     use chrono::DateTime;
 
     use super::*;
+
+    #[test]
+    fn preserves_legacy_and_persisted_panel_numbers() {
+        let legacy = r#"{
+            "schemaVersion": 1,
+            "guildId": "123456789012345678",
+            "subscriptions": [],
+            "notificationRoles": [
+                {"roleId": "123456789012345679", "name": "A"},
+                {"roleId": "123456789012345680", "name": "B"}
+            ]
+        }"#;
+        let mut settings = parse_settings(legacy).unwrap();
+        assert_eq!(settings.notification_roles[0].reaction_index, Some(0));
+        assert_eq!(settings.notification_roles[1].reaction_index, Some(1));
+
+        settings.notification_roles.remove(0);
+        let settings = parse_settings(&serde_json::to_string(&settings).unwrap()).unwrap();
+        assert_eq!(settings.notification_roles[0].reaction_index, Some(1));
+    }
 
     #[test]
     fn merges_only_the_unaccounted_process_interval() {

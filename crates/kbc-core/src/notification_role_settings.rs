@@ -4,28 +4,48 @@ use std::fmt::{Display, Formatter};
 use std::sync::Arc;
 
 use kbc_protocol::{ActionOutcome, CoreActionData, RequestId};
+use tokio::sync::Mutex;
 
-use crate::role_panel::number_emoji;
-use crate::storage::{NotificationRole, NotificationRolePanel, StorageService};
+use crate::role_panel::{number_emoji, sync_action};
+use crate::storage::{
+    MAX_NOTIFICATION_ROLES, NotificationRole, NotificationRolePanel, StorageService,
+};
 use crate::task_runtime::TaskRuntime;
 
 pub(crate) struct NotificationRoleSettingsService {
     storage: Arc<StorageService>,
     tasks: Arc<TaskRuntime>,
+    panel_edit: Mutex<()>,
 }
 
 pub(crate) struct RoleUpdateResult {
     pub(crate) changed: bool,
     pub(crate) panel_updated: bool,
+    pub(crate) roles_synced: bool,
 }
 
 pub(crate) struct PanelPublishResult {
-    pub(crate) old_panel_disabled: bool,
+    old_panel_disabled: bool,
+    roles_synced: bool,
+}
+
+impl PanelPublishResult {
+    pub(crate) fn message(&self, status: &str) -> String {
+        let mut message = panel_update_message(status, true, self.roles_synced);
+        if !self.old_panel_disabled {
+            message.push_str("\n⚠️ 旧パネルを無効化できませんでした。");
+        }
+        message
+    }
 }
 
 impl NotificationRoleSettingsService {
     pub(crate) fn new(storage: Arc<StorageService>, tasks: Arc<TaskRuntime>) -> Self {
-        Self { storage, tasks }
+        Self {
+            storage,
+            tasks,
+            panel_edit: Mutex::new(()),
+        }
     }
 
     pub(crate) async fn create_role(
@@ -45,9 +65,11 @@ impl NotificationRoleSettingsService {
             )
             .await
         {
-            Ok(ActionOutcome::RoleResolved { role_id, name }) => {
-                Ok(NotificationRole { role_id, name })
-            }
+            Ok(ActionOutcome::RoleResolved { role_id, name }) => Ok(NotificationRole {
+                role_id,
+                name,
+                reaction_index: None,
+            }),
             Ok(ActionOutcome::Failure { code, .. }) => {
                 Err(NotificationRoleSettingsError::new(code))
             }
@@ -69,14 +91,47 @@ impl NotificationRoleSettingsService {
         role_id: &str,
         enabled: bool,
     ) -> Result<RoleUpdateResult, NotificationRoleSettingsError> {
-        let role = if enabled {
+        let _edit = self.panel_edit.lock().await;
+        let previous = self
+            .storage
+            .notification_role_settings(guild_id)
+            .await
+            .map_err(|error| NotificationRoleSettingsError::new(error.code()))?;
+        let current_index = previous
+            .roles
+            .iter()
+            .find(|role| role.role_id == role_id)
+            .and_then(|role| role.reaction_index);
+        let mut role = if enabled {
             self.resolve_role(request_id, guild_id, role_id).await?
         } else {
             NotificationRole {
                 role_id: role_id.to_owned(),
                 name: "削除対象".to_owned(),
+                reaction_index: current_index,
             }
         };
+        if enabled {
+            let index = current_index
+                .or_else(|| {
+                    (0..MAX_NOTIFICATION_ROLES).find(|index| {
+                        previous
+                            .roles
+                            .iter()
+                            .all(|role| role.reaction_index != Some(*index))
+                    })
+                })
+                .ok_or_else(|| {
+                    NotificationRoleSettingsError::new("notification-role-limit-reached")
+                })?;
+            role.reaction_index = Some(index);
+            if current_index.is_none()
+                && let Some(panel) = &previous.panel
+            {
+                self.update_panel_reaction(request_id, guild_id, panel, index, true)
+                    .await?;
+            }
+        }
         let changed = self
             .storage
             .set_notification_role(guild_id, &role, enabled)
@@ -87,13 +142,28 @@ impl NotificationRoleSettingsService {
             .notification_role_settings(guild_id)
             .await
             .map_err(|error| NotificationRoleSettingsError::new(error.code()))?;
-        let panel_updated = match &settings.panel {
-            Some(panel) => self.refresh_panel(request_id, panel, &settings.roles).await,
-            None => true,
+        let (panel_updated, roles_synced) = match &settings.panel {
+            Some(panel) => {
+                let edited = self.refresh_panel(request_id, panel, &settings.roles).await;
+                let mut cleaned = true;
+                if !enabled && let Some(index) = current_index {
+                    cleaned = self
+                        .update_panel_reaction(request_id, guild_id, panel, index, false)
+                        .await
+                        .is_ok();
+                }
+                let synced = edited
+                    && self
+                        .sync_panel(request_id, guild_id, panel, &settings.roles)
+                        .await;
+                (edited && cleaned, synced)
+            }
+            None => (true, true),
         };
         Ok(RoleUpdateResult {
             changed,
             panel_updated,
+            roles_synced,
         })
     }
 
@@ -103,6 +173,7 @@ impl NotificationRoleSettingsService {
         guild_id: &str,
         channel_id: &str,
     ) -> Result<PanelPublishResult, NotificationRoleSettingsError> {
+        let _edit = self.panel_edit.lock().await;
         let settings = self
             .storage
             .notification_role_settings(guild_id)
@@ -126,7 +197,7 @@ impl NotificationRoleSettingsService {
             message_id,
         };
         if !self
-            .add_panel_reactions(request_id, &new_panel, settings.roles.len())
+            .add_panel_reactions(request_id, &new_panel, &settings.roles)
             .await
         {
             let _ = self
@@ -152,7 +223,35 @@ impl NotificationRoleSettingsService {
             }
             _ => true,
         };
-        Ok(PanelPublishResult { old_panel_disabled })
+        let roles_synced = self
+            .sync_panel(request_id, guild_id, &new_panel, &settings.roles)
+            .await;
+        Ok(PanelPublishResult {
+            old_panel_disabled,
+            roles_synced,
+        })
+    }
+
+    pub(crate) async fn sync_saved_panels(&self, request_id: &RequestId) {
+        let guild_ids = match self.storage.notification_role_panel_guilds().await {
+            Ok(guild_ids) => guild_ids,
+            Err(error) => {
+                eprintln!("Notification role panels could not be loaded: {error}");
+                return;
+            }
+        };
+        for guild_id in guild_ids {
+            let _edit = self.panel_edit.lock().await;
+            match self.storage.notification_role_settings(&guild_id).await {
+                Ok(settings) => {
+                    if let Some(panel) = settings.panel {
+                        self.sync_panel(request_id, &guild_id, &panel, &settings.roles)
+                            .await;
+                    }
+                }
+                Err(error) => eprintln!("Notification role panel lookup failed: {error}"),
+            }
+        }
     }
 
     async fn resolve_role(
@@ -172,9 +271,11 @@ impl NotificationRoleSettingsService {
             )
             .await
         {
-            Ok(ActionOutcome::RoleResolved { role_id, name }) => {
-                Ok(NotificationRole { role_id, name })
-            }
+            Ok(ActionOutcome::RoleResolved { role_id, name }) => Ok(NotificationRole {
+                role_id,
+                name,
+                reaction_index: None,
+            }),
             Ok(ActionOutcome::Failure { code, .. }) => {
                 Err(NotificationRoleSettingsError::new(code))
             }
@@ -195,33 +296,73 @@ impl NotificationRoleSettingsService {
         panel: &NotificationRolePanel,
         roles: &[NotificationRole],
     ) -> bool {
-        for action in [
+        self.request_success(
+            request_id,
             CoreActionData::EditMessage {
                 channel_id: panel.channel_id.clone(),
                 message_id: panel.message_id.clone(),
                 content: panel_content(roles),
             },
-            CoreActionData::ClearReactions {
-                channel_id: panel.channel_id.clone(),
-                message_id: panel.message_id.clone(),
-            },
-        ] {
-            if !self.request_success(request_id, action).await {
-                return false;
-            }
-        }
-        self.add_panel_reactions(request_id, panel, roles.len())
+        )
+        .await
+    }
+
+    async fn sync_panel(
+        &self,
+        request_id: &RequestId,
+        guild_id: &str,
+        panel: &NotificationRolePanel,
+        roles: &[NotificationRole],
+    ) -> bool {
+        let Some(action) = sync_action(guild_id, panel, roles, None, None) else {
+            return true;
+        };
+        self.request_success(request_id, action).await
+    }
+
+    async fn update_panel_reaction(
+        &self,
+        request_id: &RequestId,
+        guild_id: &str,
+        panel: &NotificationRolePanel,
+        index: usize,
+        enabled: bool,
+    ) -> Result<(), NotificationRoleSettingsError> {
+        let Some(emoji) = number_emoji(index) else {
+            return Err(NotificationRoleSettingsError::new(
+                "invalid-notification-role-slot",
+            ));
+        };
+        match self
+            .tasks
+            .request_adapter(
+                request_id,
+                CoreActionData::UpdatePanelReaction {
+                    guild_id: guild_id.to_owned(),
+                    channel_id: panel.channel_id.clone(),
+                    message_id: panel.message_id.clone(),
+                    emoji: emoji.to_owned(),
+                    enabled,
+                },
+            )
             .await
+        {
+            Ok(ActionOutcome::Success { .. }) => Ok(()),
+            Ok(ActionOutcome::Failure { code, .. }) => {
+                Err(NotificationRoleSettingsError::new(code))
+            }
+            _ => Err(NotificationRoleSettingsError::new("panel-reaction-failed")),
+        }
     }
 
     async fn add_panel_reactions(
         &self,
         request_id: &RequestId,
         panel: &NotificationRolePanel,
-        count: usize,
+        roles: &[NotificationRole],
     ) -> bool {
-        for index in 0..count {
-            let Some(emoji) = number_emoji(index) else {
+        for role in roles {
+            let Some(emoji) = role.reaction_index.and_then(number_emoji) else {
                 return false;
             };
             if !self
@@ -278,14 +419,29 @@ fn panel_content(roles: &[NotificationRole]) -> String {
     if roles.is_empty() {
         lines.push("設定されている通知ロールはありません".to_owned());
     } else {
-        lines.extend(
-            roles
-                .iter()
-                .enumerate()
-                .map(|(index, role)| format!("{} {}", index + 1, role.name.replace('`', "′"))),
-        );
+        let mut ordered: Vec<_> = roles.iter().collect();
+        ordered.sort_unstable_by_key(|role| role.reaction_index);
+        lines.extend(ordered.into_iter().filter_map(|role| {
+            let index = role.reaction_index?;
+            Some(format!("{} {}", index + 1, role.name.replace('`', "′")))
+        }));
     }
     format!("```\n{}\n```", lines.join("\n"))
+}
+
+pub(crate) fn panel_update_message(
+    status: &str,
+    panel_updated: bool,
+    roles_synced: bool,
+) -> String {
+    let mut message = status.to_owned();
+    if !panel_updated {
+        message.push_str("\n⚠️ ロール選択パネルの表示またはリアクションを更新できませんでした。");
+    }
+    if !roles_synced {
+        message.push_str("\n⚠️ ロールとリアクションの同期を完了できませんでした。");
+    }
+    message
 }
 
 fn successful_message_id(outcome: Result<ActionOutcome, &'static str>) -> Option<String> {

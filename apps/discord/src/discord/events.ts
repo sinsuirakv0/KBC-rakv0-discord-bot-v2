@@ -55,6 +55,24 @@ export function createReactionRemoveEvent(
   return createReactionEvent("reactionRemove", reaction, user);
 }
 
+export function createDiscordReadyEvent(): CoreEvent {
+  return createEvent({ type: "discordReady" });
+}
+
+export function createReactionClearEvent(
+  message: Message | PartialMessageReaction["message"],
+  emoji: string | null,
+): CoreEvent | undefined {
+  if (!message.guildId) return undefined;
+  return createEvent({
+    type: "reactionClear",
+    guildId: message.guildId,
+    channelId: message.channelId,
+    messageId: message.id,
+    emoji,
+  });
+}
+
 export function createComponentInteractionEvent(
   interaction: MessageComponentInteraction,
 ): CoreEvent {

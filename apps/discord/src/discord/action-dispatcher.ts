@@ -138,8 +138,8 @@ function actionOrderingKey(action: CoreActionData): string {
     || action.type === "createGuildRole"
     || action.type === "resolveAssignableRole"
     || action.type === "resolveSendableChannel"
-    || action.type === "addGuildMemberRole"
-    || action.type === "removeGuildMemberRole"
+    || action.type === "updatePanelReaction"
+    || action.type === "syncReactionRoles"
   ) {
     return `guild:${action.guildId}`;
   }

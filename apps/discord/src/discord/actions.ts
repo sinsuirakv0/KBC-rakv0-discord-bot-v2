@@ -3,12 +3,19 @@
 import {
   ButtonStyle,
   ChannelType,
+  DiscordAPIError,
   MessageFlags,
   PermissionFlagsBits,
+  ReactionType,
+  RESTJSONErrorCodes,
+  Routes,
   TextInputStyle,
   type APIEmbed,
+  type APIMessage,
   type Client,
   type Guild,
+  type GuildMember,
+  type RESTGetAPIChannelMessageReactionUsersResult,
   type Role,
   type SendableChannels,
 } from "discord.js";
@@ -279,7 +286,7 @@ export async function executeCoreAction(
     }
     case "resolveAssignableRole": {
       const guild = await client.guilds.fetch(action.guildId);
-      const role = await getManageableRole(guild, action.roleId, true);
+      const role = await getManageableRole(guild, action.roleId);
       return roleResolved(role);
     }
     case "resolveSendableChannel": {
@@ -294,23 +301,139 @@ export async function executeCoreAction(
         name: "name" in channel ? channel.name : channel.id,
       };
     }
-    case "addGuildMemberRole": {
-      const guild = await client.guilds.fetch(action.guildId);
-      const role = await getManageableRole(guild, action.roleId, true);
-      const member = await guild.members.fetch(action.userId);
-      await member.roles.add(role, "KBC通知設定");
+    case "updatePanelReaction": {
+      const panel = await getPanelSnapshot(client, action);
+      const reaction = panel.reactions?.find((item) => item.emoji.name === action.emoji && !item.emoji.id);
+      const route = Routes.channelMessageReaction(action.channelId, action.messageId, encodeURIComponent(action.emoji));
+      if (action.enabled) {
+        // 未使用の番号に残っている選択を新しいロールへ引き継がない。
+        if (reaction && reaction.count > Number(reaction.me) + Number(reaction.me_burst ?? false)) {
+          throw new DiscordActionError("panel_reaction_slot_in_use", false);
+        }
+        await client.rest.put(Routes.channelMessageOwnReaction(
+          action.channelId, action.messageId, encodeURIComponent(action.emoji),
+        ));
+      } else if (reaction) {
+        await client.rest.delete(route);
+      }
       return success(null);
     }
-    case "removeGuildMemberRole": {
-      const guild = await client.guilds.fetch(action.guildId);
-      const role = await getManageableRole(guild, action.roleId, false);
-      const member = await guild.members.fetch(action.userId);
-      await member.roles.remove(role, "KBC通知設定");
+    case "syncReactionRoles": {
+      await syncReactionRoles(client, action);
       return success(null);
     }
     default:
       return assertNever(action);
   }
+}
+
+type ReactionRoleSync = Extract<CoreActionData, { type: "syncReactionRoles" }>;
+
+async function getPanelSnapshot(
+  client: Client,
+  action: Pick<ReactionRoleSync, "guildId" | "channelId" | "messageId">,
+): Promise<APIMessage> {
+  const channel = await getSendableChannel(client, action.channelId);
+  if (!("guildId" in channel) || channel.guildId !== action.guildId) {
+    throw new DiscordActionError("invalid_role_panel", false);
+  }
+  const message = await client.rest.get(Routes.channelMessage(channel.id, action.messageId)) as APIMessage;
+  if (message.author.id !== client.user?.id) {
+    throw new DiscordActionError("invalid_role_panel", false);
+  }
+  return message;
+}
+
+async function syncReactionRoles(client: Client, action: ReactionRoleSync): Promise<void> {
+  const guild = await client.guilds.fetch(action.guildId);
+  const panel = await getPanelSnapshot(client, action);
+  const members: GuildMember[] = [];
+  if (action.userId) {
+    try {
+      members.push(await guild.members.fetch({ user: action.userId, force: true, cache: false }));
+    } catch (error) {
+      if (error instanceof DiscordAPIError && error.code === RESTJSONErrorCodes.UnknownMember) return;
+      throw error;
+    }
+  } else {
+    if (guild.memberCount > MAX_MEMBER_RESOLUTION_GUILD_SIZE) {
+      throw new DiscordActionError("guild_too_large", false);
+    }
+    let after: string | undefined;
+    const limit = 1000;
+    while (true) {
+      const page = await guild.members.list({ after, limit, cache: false });
+      if (members.length + page.size > MAX_MEMBER_RESOLUTION_GUILD_SIZE) {
+        throw new DiscordActionError("guild_too_large", false);
+      }
+      members.push(...page.values());
+      if (page.size < limit) break;
+      after = page.lastKey();
+    }
+  }
+
+  let firstError: unknown;
+  for (const { emoji, roleId } of action.bindings) {
+    try {
+      const role = await getManageableRole(guild, roleId);
+      const selected = await fetchPanelReactors(client, panel, action, emoji);
+      for (const member of members) {
+        const hasRole = member.roles.cache.has(role.id);
+        const shouldHaveRole = !member.user.bot && selected.has(member.id);
+        if (hasRole === shouldHaveRole) continue;
+        try {
+          if (shouldHaveRole) {
+            await member.roles.add(role, "KBC通知設定");
+          } else {
+            await member.roles.remove(role, "KBC通知設定");
+          }
+        } catch (error) {
+          firstError ??= error;
+        }
+      }
+    } catch (error) {
+      firstError ??= error;
+    }
+  }
+  if (firstError !== undefined) throw firstError;
+}
+
+async function fetchPanelReactors(
+  client: Client,
+  panel: APIMessage,
+  action: ReactionRoleSync,
+  emoji: string,
+): Promise<Set<string>> {
+  const selected = new Set<string>();
+  const reaction = panel.reactions?.find((item) => item.emoji.name === emoji && !item.emoji.id);
+  if (!reaction) return selected;
+
+  const route = Routes.channelMessageReaction(action.channelId, action.messageId, encodeURIComponent(emoji));
+  const types = [ReactionType.Normal];
+  if (reaction.count_details?.burst) types.push(ReactionType.Burst);
+  for (const type of types) {
+    const limit = action.userId ? 1 : 100;
+    let after = action.userId ? (BigInt(action.userId) - 1n).toString() : undefined;
+    // 全ページを読めなければ、そのロールは一括変更しない。
+    for (let offset = 0; ; offset += limit) {
+      const query = new URLSearchParams({ limit: String(limit), type: String(type) });
+      if (after) query.set("after", after);
+      const page = await client.rest.get(route, { query }) as RESTGetAPIChannelMessageReactionUsersResult;
+      if (action.userId) {
+        if (page.some((user) => user.id === action.userId && !user.bot)) selected.add(action.userId);
+        break;
+      }
+      if (offset + page.length > MAX_MEMBER_RESOLUTION_GUILD_SIZE) {
+        throw new DiscordActionError("too_many_panel_reactors", false);
+      }
+      for (const user of page) {
+        if (!user.bot) selected.add(user.id);
+      }
+      if (page.length < limit) break;
+      after = page[page.length - 1]?.id;
+    }
+  }
+  return selected;
 }
 
 type RichMessage = Extract<CoreActionData, {
@@ -538,16 +661,15 @@ async function getGuildSendableChannel(
 async function getManageableRole(
   guild: Guild,
   roleId: string,
-  requireNoPermissions: boolean,
 ): Promise<Role> {
-  const role = await guild.roles.fetch(roleId);
+  const role = await guild.roles.fetch(roleId, { force: true });
   if (!role || role.id === guild.id || role.managed) {
     throw new DiscordActionError("role_unavailable", false);
   }
   if (!role.editable) {
     throw new DiscordActionError("role_not_manageable", false);
   }
-  if (requireNoPermissions && role.permissions.bitfield !== 0n) {
+  if (role.permissions.bitfield !== 0n) {
     throw new DiscordActionError("role_has_permissions", false);
   }
   return role;

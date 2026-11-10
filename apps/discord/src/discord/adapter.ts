@@ -8,6 +8,7 @@
   type Message,
   type MessageComponentInteraction,
   type MessageReaction,
+  type PartialMessage,
   type ModalSubmitInteraction,
   type PartialMessageReaction,
   type PartialUser,
@@ -28,9 +29,11 @@ import {
 import {
   createActionResultEvent,
   createComponentInteractionEvent,
+  createDiscordReadyEvent,
   createMessageCreateEvent,
   createModalSubmitEvent,
   createReactionAddEvent,
+  createReactionClearEvent,
   createReactionRemoveEvent,
 } from "./events";
 import { InteractionRegistry } from "./interaction-registry";
@@ -111,7 +114,7 @@ export class DiscordAdapter {
         GatewayIntentBits.MessageContent,
         GatewayIntentBits.GuildMessageReactions,
       ],
-      partials: [Partials.Channel, Partials.Message, Partials.Reaction],
+      partials: [Partials.Channel, Partials.Message, Partials.Reaction, Partials.User],
     });
 
     return new DiscordAdapter(config, core, client, callbacks);
@@ -127,6 +130,8 @@ export class DiscordAdapter {
     this.client.on(Events.MessageCreate, this.handleMessageCreate);
     this.client.on(Events.MessageReactionAdd, this.handleReactionAdd);
     this.client.on(Events.MessageReactionRemove, this.handleReactionRemove);
+    this.client.on(Events.MessageReactionRemoveAll, this.handleReactionRemoveAll);
+    this.client.on(Events.MessageReactionRemoveEmoji, this.handleReactionRemoveEmoji);
     this.client.on(Events.InteractionCreate, this.handleInteractionCreate);
     this.actionLoop = this.consumeActions().catch((error: unknown) => {
       this.fail(error);
@@ -146,6 +151,7 @@ export class DiscordAdapter {
   }
 
   private readonly handleReady = (): void => {
+    this.dispatchEvent(createDiscordReadyEvent());
     this.callbacks.onReady(this.client.user?.tag ?? "unknown");
     this.startEventUpdates();
   };
@@ -195,7 +201,7 @@ export class DiscordAdapter {
     reaction: MessageReaction | PartialMessageReaction,
     user: User | PartialUser,
   ): void => {
-    if (user.bot || this.isStopping) {
+    if (user.id === this.client.user?.id || user.bot || this.isStopping) {
       return;
     }
     this.dispatchEvent(createReactionAddEvent(reaction, user));
@@ -205,10 +211,24 @@ export class DiscordAdapter {
     reaction: MessageReaction | PartialMessageReaction,
     user: User | PartialUser,
   ): void => {
-    if (user.bot || this.isStopping) {
+    if (user.id === this.client.user?.id || user.bot || this.isStopping) {
       return;
     }
     this.dispatchEvent(createReactionRemoveEvent(reaction, user));
+  };
+
+  private readonly handleReactionRemoveAll = (message: Message | PartialMessage): void => {
+    if (this.isStopping) return;
+    const event = createReactionClearEvent(message, null);
+    if (event) this.dispatchEvent(event);
+  };
+
+  private readonly handleReactionRemoveEmoji = (
+    reaction: MessageReaction | PartialMessageReaction,
+  ): void => {
+    if (this.isStopping || reaction.emoji.id || !reaction.emoji.name) return;
+    const event = createReactionClearEvent(reaction.message, reaction.emoji.name);
+    if (event) this.dispatchEvent(event);
   };
 
   private readonly handleInteractionCreate = (interaction: Interaction): void => {
@@ -365,6 +385,8 @@ export class DiscordAdapter {
     this.client.off(Events.MessageCreate, this.handleMessageCreate);
     this.client.off(Events.MessageReactionAdd, this.handleReactionAdd);
     this.client.off(Events.MessageReactionRemove, this.handleReactionRemove);
+    this.client.off(Events.MessageReactionRemoveAll, this.handleReactionRemoveAll);
+    this.client.off(Events.MessageReactionRemoveEmoji, this.handleReactionRemoveEmoji);
     this.client.off(Events.InteractionCreate, this.handleInteractionCreate);
     this.client.destroy();
     this.actionDispatcher.close();

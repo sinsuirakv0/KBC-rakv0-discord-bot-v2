@@ -6,7 +6,7 @@ use std::fmt::{Display, Formatter};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-pub const PROTOCOL_VERSION: u32 = 7;
+pub const PROTOCOL_VERSION: u32 = 8;
 
 macro_rules! protocol_id {
     ($name:ident) => {
@@ -205,6 +205,7 @@ impl CoreEvent {
     rename_all_fields = "camelCase"
 )]
 pub enum CoreEventData {
+    DiscordReady,
     MessageCreate {
         guild_id: Option<String>,
         channel_id: String,
@@ -226,6 +227,12 @@ pub enum CoreEventData {
         message_id: String,
         user_id: String,
         emoji: String,
+    },
+    ReactionClear {
+        guild_id: String,
+        channel_id: String,
+        message_id: String,
+        emoji: Option<String>,
     },
     ComponentInteraction {
         interaction_id: String,
@@ -403,16 +410,27 @@ pub enum CoreActionData {
         guild_id: String,
         channel_id: String,
     },
-    AddGuildMemberRole {
+    UpdatePanelReaction {
         guild_id: String,
-        user_id: String,
-        role_id: String,
+        channel_id: String,
+        message_id: String,
+        emoji: String,
+        enabled: bool,
     },
-    RemoveGuildMemberRole {
+    SyncReactionRoles {
         guild_id: String,
-        user_id: String,
-        role_id: String,
+        channel_id: String,
+        message_id: String,
+        bindings: Vec<ReactionRoleBinding>,
+        user_id: Option<String>,
     },
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ReactionRoleBinding {
+    pub emoji: String,
+    pub role_id: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
