@@ -24,6 +24,8 @@ Command解析、Session状態、再試行Policy、Domain LogicをTypeScriptへ�
 - `messageCreate` → `CoreEvent.messageCreate`
 - `messageReactionAdd` → `CoreEvent.reactionAdd`
 - `messageReactionRemove` → `CoreEvent.reactionRemove`
+- `messageReactionRemoveAll` / `messageReactionRemoveEmoji` → `CoreEvent.reactionClear`
+- `clientReady` → `CoreEvent.discordReady`
 - Button・Select → `CoreEvent.componentInteraction`
 - Modal送信 → `CoreEvent.modalSubmit`
 
@@ -84,8 +86,8 @@ Dispatcherは待機中の先頭だけを機械的に実行せず、現在実行�
 | `createGuildRole` | 権限ゼロの通知用Roleを作成 | `roleResolved` |
 | `resolveAssignableRole` | Roleが権限ゼロかつBot管理可能か確認 | `roleResolved` |
 | `resolveSendableChannel` | 同一Guild内でBotが送信可能なChannelか確認 | `channelResolved` |
-| `addGuildMemberRole` | 選択Reactionに対応するRoleをMemberへ付与 | `success` |
-| `removeGuildMemberRole` | 選択Reactionに対応するRoleをMemberから解除 | `success` |
+| `updatePanelReaction` | 指定番号のReactionだけを追加・解除 | `success` |
+| `syncReactionRoles` | 選択Reactionと指定Roleの差分だけを反映 | `success` |
 
 成功・失敗にかかわらず、元の`ActionId`と`RequestId`を維持した結果を`actionResult`としてCoreへ返す。異なるordering keyの結果順は実行完了順となるが、Session Manager、Task Runtime、Notification Serviceは`ActionId`で待機元を特定する。Adapterは自動再試行せず、失敗を安定したcodeとretry可否へ分類する。内部ErrorやStack TraceはProtocolへ含めず、Local logだけへ出す。
 

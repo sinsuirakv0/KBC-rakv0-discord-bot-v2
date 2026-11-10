@@ -23,9 +23,10 @@ npm run generate:protocol
 - `componentInteraction` / `modalSubmit`: 設定UIのcustom ID・選択値・field値をCoreへ渡す
 - `sendInteractiveMessage` / `replyInteraction` / `updateInteraction` / `editInteractionReply` / `showModal`: Coreが構成した設定UIをAdapterでDiscord objectへ変換する
 - `resolveSendableChannel` / `channelResolved`: 通知先・パネル設置先が同じGuildにあり、Botが送信可能か確認する
-- `reactionRemove`: 永続通知ロールパネルの選択解除をCoreへ渡す
+- `discordReady` / `reactionRemove` / `reactionClear`: 通知パネルの起動時同期・個別解除・一括解除をCoreへ渡す
 - `createGuildRole` / `resolveAssignableRole` / `roleResolved`: 通知用Roleの作成と安全性確認をDiscord Adapterへ依頼する
-- `addGuildMemberRole` / `removeGuildMemberRole`: Coreが選択したRoleを対象Memberへ付与・解除する
+- `updatePanelReaction`: パネルに指定された番号のReactionだけを追加・解除する
+- `syncReactionRoles`: Coreが指定したReactionとRoleの組についてMemberの所持状態を同期する
 - `sendNotification.allowedRoleIds`: 更新通知で許可するRole mentionだけを明示する。通常の`sendMessage`にはmention許可を持たせない
 
 ### N-API Bridge

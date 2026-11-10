@@ -27,16 +27,18 @@ requestId
 event
 ```
 
-現在のEvent Variantは次の6つとする。
+現在のEvent Variantは次の8つとする。
 
+- `discordReady`
 - `messageCreate`
 - `reactionAdd`
 - `reactionRemove`
+- `reactionClear`
 - `componentInteraction`
 - `modalSubmit`
 - `actionResult`
 
-`messageCreate`とReaction Eventには、Discord Objectではなく必要なSnowflakeとplain dataだけを入れる。Discord Snowflakeは精度を失わないよう、すべてStringで保持する。`reactionRemove`は永続的な通知ロール選択パネルでロールを外すために使い、短期Sessionは`reactionAdd`だけを扱う。
+`messageCreate`とReaction Eventには、Discord Objectではなく必要なSnowflakeとplain dataだけを入れる。Discord Snowflakeは精度を失わないよう、すべてStringで保持する。`discordReady`は保存済み通知パネルの同期開始に使う。`reactionClear`は1種類または全Reactionの一括解除を表す。短期Sessionは`reactionAdd`だけを扱う。
 
 `actionResult`はTypeScriptがDiscord操作を終えた結果をCoreへ返すEventである。通常成功時は必要に応じて`messageId`を返し、Guild member解決時は有限な`membersResolved`を返す。失敗時は安定したcodeとretry可否だけを返す。内部例外やStack TraceはProtocolへ載せない。
 
@@ -53,7 +55,7 @@ requestId
 action
 ```
 
-現行Version 7のAction Variantは次の21個とする。
+現行Version 8のAction Variantは次の21個とする。
 
 - `sendMessage`
 - `sendInteractiveMessage`
@@ -74,8 +76,8 @@ action
 - `createGuildRole`
 - `resolveAssignableRole`
 - `resolveSendableChannel`
-- `addGuildMemberRole`
-- `removeGuildMemberRole`
+- `updatePanelReaction`
+- `syncReactionRoles`
 
 AttachmentのdataはProtocol上`Uint8Array`とし、N-APIの実運用経路ではNode.js `Buffer`として扱う。base64文字列へ変換しない。
 
@@ -119,7 +121,7 @@ Wire fieldはcamelCase、Variant識別子は`type`とする。生成されたTyp
 
 ## 6. Version互換性
 
-現在の`PROTOCOL_VERSION`は`7`である。Version 7では`componentInteraction.messageId`と、Embed・添付を扱うRich Message Actionを追加したためVersionを上げた。
+現在の`PROTOCOL_VERSION`は`8`である。Version 8では起動・一括解除Eventを追加し、通知パネルのRole操作をReactionとの同期Actionに変更した。
 
 AdapterはNative module読込時に`getRuntimeInfo()`を呼び、Rust CoreとAdapterのVersionが一致しなければ起動を失敗させる。
 

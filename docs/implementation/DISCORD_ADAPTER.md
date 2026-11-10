@@ -30,9 +30,10 @@ Phase 4では、Discord Gateway EventをCoreEventへ変換し、CoreActionをDis
 
 - `executeCoreAction(client, action, outgoingMessagePrefix)`: Protocol Actionをdiscord.js操作へ変換し、`success`、`membersResolved`、`roleResolved`のいずれかを返す。送信・編集本文へ環境別prefixを付ける
 - `resolveGuildMembers`: 最大64件の登録IDと最大5,000人のGuild memberを照合し、名前順で最大25人を返す。完全なRole所属者取得にはServer Members Intentを使用する
-- `getManageableRole(guild, roleId, requireNoPermissions)`: managed、`@everyone`、Botより上位のRoleを拒否し、付与時は権限ゼロも検査する
+- `getManageableRole(guild, roleId)`: DiscordからRoleを再取得し、managed、`@everyone`、Botが管理できないRole、権限付きRoleを拒否する
 - `createGuildRole`: 権限・hoist・mentionableを無効にした通知用Roleを作成する
-- `addGuildMemberRole` / `removeGuildMemberRole`: Reactionを行ったMemberだけのRoleを変更する。付与時は毎回権限ゼロを再検査する
+- `syncReactionRoles`: Discordの最新のReactionを読み、指定されたRoleだけを個別付与・解除する。各Roleの権限ゼロと管理可否を確認する
+- `updatePanelReaction`: 指定の番号だけを準備・削除する。追加時は既存MemberのReactionがある空き番号を拒否する
 - `createAttachmentMessage(prefix, message)`: 本文なしのLocal Attachmentにも`[local]`識別子を付ける
 - `getSendableChannel(client, channelId)`: fetchしたChannelがtext basedかつsend可能であることを確認する
 - `getMessage(client, channelId, messageId)`: edit以外のMessage対象操作に使うMessageを取得する
