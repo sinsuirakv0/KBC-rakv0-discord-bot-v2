@@ -33,6 +33,7 @@ Phase 4では、Discord Gateway EventをCoreEventへ変換し、CoreActionをDis
 - `getManageableRole(guild, roleId)`: DiscordからRoleを再取得し、managed、`@everyone`、Botが管理できないRole、権限付きRoleを拒否する
 - `createGuildRole`: 権限・hoist・mentionableを無効にした通知用Roleを作成する
 - `syncReactionRoles`: Discordの最新のReactionを読み、指定されたRoleだけを個別付与・解除する。各Roleの権限ゼロと管理可否を確認する
+  - 個別Memberへの付与・解除でDiscordが `50001 Missing Access` を返したときは、その変更を飛ばし、同期単位で件数を警告する。照合に必要な読み取り・権限確認の失敗や、ほかの変更エラーは引き続き失敗として返す
 - `updatePanelReaction`: 指定の番号だけを準備・削除する。追加時は既存MemberのReactionがある空き番号を拒否する
 - `createAttachmentMessage(prefix, message)`: 本文なしのLocal Attachmentにも`[local]`識別子を付ける
 - `getSendableChannel(client, channelId)`: fetchしたChannelがtext basedかつsend可能であることを確認する

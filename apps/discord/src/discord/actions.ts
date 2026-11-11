@@ -404,6 +404,7 @@ async function syncReactionRoles(client: Client, action: ReactionRoleSync): Prom
   }
 
   let firstError: unknown;
+  let skippedChanges = 0;
   for (const { emoji, roleId } of action.bindings) {
     try {
       const role = await getManageableRole(guild, roleId);
@@ -419,12 +420,21 @@ async function syncReactionRoles(client: Client, action: ReactionRoleSync): Prom
             await member.roles.remove(role, "KBC通知設定");
           }
         } catch (error) {
-          firstError ??= error;
+          if (error instanceof DiscordAPIError && error.code === RESTJSONErrorCodes.MissingAccess) {
+            skippedChanges += 1;
+          } else {
+            firstError ??= error;
+          }
         }
       }
     } catch (error) {
       firstError ??= error;
     }
+  }
+  if (skippedChanges > 0) {
+    console.warn(
+      `Notification role sync skipped inaccessible changes: guild_id=${action.guildId} message_id=${action.messageId} count=${skippedChanges} code=${RESTJSONErrorCodes.MissingAccess}`,
+    );
   }
   if (firstError !== undefined) throw firstError;
 }
